@@ -1,0 +1,666 @@
+/* ═══════════════════════════════════════════════════════════════
+   hwp2html Design System — 구현체
+   진실원: .claude/skills/hwp2html-design-system/SKILL.md (항상 동기화)
+   3-tier: Primitives → Semantic aliases → Components
+   ═══════════════════════════════════════════════════════════════ */
+
+:root {
+  /* Tier 1 — Primitives */
+  --neutral-0: #ffffff;
+  --neutral-50: #f8f9fb;
+  --neutral-100: #f2f4f7;
+  --neutral-150: #eceef2;
+  --neutral-200: #e4e7ec;
+  --neutral-300: #d0d5dd;
+  --neutral-400: #98a2b3;
+  --neutral-500: #667085;
+  --neutral-600: #475467;
+  --neutral-700: #344054;
+  --neutral-800: #1d2939;
+  --neutral-900: #101828;
+
+  --brand-50: #f4f5fc;
+  --brand-100: #e8eaf9;
+  --brand-600: #5e6ad2;
+  --brand-700: #4f5abf;
+
+  --danger: #dc2626;
+  --danger-soft: #fdeded;
+
+  /* Tier 2 — Semantic aliases (컴포넌트는 이것만 사용) */
+  --bg: var(--neutral-100);
+  --surface: var(--neutral-0);
+  --sunken: var(--neutral-100);
+  --ink: var(--neutral-900);
+  --ink-soft: var(--neutral-600);
+  --ink-muted: var(--neutral-500);
+  --line: var(--neutral-200);
+  --line-strong: var(--neutral-300);
+  --primary: var(--brand-600);
+  --primary-hover: var(--brand-700);
+
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --dur-fast: 120ms;
+  --dur-base: 200ms;
+
+  --focus-ring: 0 0 0 3px rgb(94 106 210 / 0.32);
+  --shadow-sm: 0 1px 2px rgb(16 24 40 / 0.05);
+  --shadow-page: 0 1px 3px 1px rgb(16 24 40 / 0.12);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: 'Pretendard Variable', Pretendard, 'Apple SD Gothic Neo', '맑은 고딕', system-ui, sans-serif;
+  font-size: 13px; /* ts-ui */
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font-family: inherit;
+}
+
+:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.shell {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── 앱바 (surface + hairline, flat) ─────────────────────────── */
+.appbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  height: 48px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  padding: 0 16px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+.brand img {
+  width: 22px;
+  height: 22px;
+  display: block;
+}
+
+.brand .arrow {
+  color: var(--ink-muted);
+  font-weight: 500;
+  margin: 0 1px;
+}
+
+.docname {
+  flex: 1;
+  min-width: 80px;
+  font-size: 13px;
+  font-weight: 500; /* ts-ui */
+  color: var(--ink-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 편집됨 배지 — pill, soft bg + 점 (이중 인코딩) */
+.edited-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  font-size: 11px;
+  font-weight: 600; /* ts-micro */
+  color: var(--brand-700);
+  background: var(--brand-50);
+  border-radius: 999px;
+  padding: 0 9px;
+  white-space: nowrap;
+}
+
+.edited-chip::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--brand-600);
+}
+
+.appbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* 아이콘 전용 ghost 버튼 — 툴바와 같은 문법 (28px, 테두리 없음) */
+.appbar-actions .icon-btn {
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  padding: 0;
+  color: var(--ink-soft);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+
+.appbar-actions .icon-btn:hover {
+  background: var(--sunken);
+  color: var(--ink);
+}
+
+.appbar-actions .icon-btn.on {
+  background: var(--brand-50);
+  color: var(--brand-700);
+}
+
+.appbar-actions .icon-btn.ok {
+  color: #16a34a;
+}
+
+.appbar-actions .icon-btn svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+
+.appbar-sep {
+  width: 1px;
+  height: 18px;
+  background: var(--line);
+  margin: 0 6px;
+}
+
+/* 컨트롤: h-32, radius 8, hairline `line`, flat */
+.appbar-actions button {
+  height: 32px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: var(--radius-md);
+  padding: 0 12px;
+  font-size: 13px;
+  font-weight: 500; /* 버튼 라벨 = 500 */
+  color: var(--ink);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
+}
+
+.appbar-actions button:hover {
+  background: var(--sunken);
+}
+
+.appbar-actions button.active {
+  border-color: var(--line-strong);
+  background: var(--sunken);
+}
+
+/* 화면당 primary 1개 — .hwpx 저장 */
+.appbar-actions button.primary {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+
+.appbar-actions button.primary:hover {
+  background: var(--primary-hover);
+  border-color: var(--primary-hover);
+}
+
+/* ── 서식 툴바 (ghost 아이콘 버튼, 크롬은 무채색) ────────────── */
+.fmtbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  flex-wrap: wrap;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  padding: 4px 12px;
+}
+
+.fmtbar button {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.fmtbar .group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-right: 12px;
+  border-right: 1px solid var(--line);
+  height: 20px;
+  align-self: center;
+}
+
+.fmtbar .group:last-of-type {
+  border-right: none;
+}
+
+.fmtbar button {
+  min-width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  color: var(--ink-soft);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+
+.fmtbar button:hover {
+  background: var(--sunken);
+  color: var(--ink);
+}
+
+.fmtbar button.on {
+  background: var(--brand-50);
+  color: var(--brand-700);
+}
+
+.fmtbar button svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+
+.fmtbar select {
+  height: 28px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 0 6px;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+
+.colorwell {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+
+.colorwell::after {
+  content: '';
+  position: absolute;
+  left: 7px;
+  right: 7px;
+  bottom: 4px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--danger);
+}
+
+.colorwell.hilite::after {
+  background: #f5d545;
+}
+
+.colorwell:hover {
+  background: var(--sunken);
+}
+
+.colorwell input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.fmt-meta {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 500; /* ts-caption */
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  white-space: nowrap;
+}
+
+.fmt-meta .link {
+  border: none;
+  background: none;
+  color: var(--brand-700);
+  font-size: 12px;
+  font-weight: 600; /* ui-emph: 클릭 가능 텍스트 */
+  cursor: pointer;
+  padding: 0;
+  min-width: 0;
+  height: auto;
+}
+
+.fmt-meta .link:hover {
+  text-decoration: underline;
+  background: none;
+}
+
+/* ── 찾기/바꾸기 바 ──────────────────────────────────────────── */
+.findbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 40px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  padding: 0 12px;
+}
+
+.findbar input {
+  height: 28px;
+  width: 180px;
+  border: 1px solid var(--line);
+  background: var(--sunken);
+  border-radius: var(--radius-sm);
+  padding: 0 10px;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  transition: background var(--dur-fast) var(--ease-out);
+}
+
+.findbar input:focus {
+  outline: none;
+  background: var(--brand-50);
+  box-shadow: var(--focus-ring);
+}
+
+.findbar input::placeholder {
+  color: var(--ink-muted);
+}
+
+.findbar button {
+  height: 28px;
+  min-width: 28px;
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 600; /* ui-emph */
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+
+.findbar button:hover:not(:disabled) {
+  background: var(--sunken);
+  color: var(--ink);
+}
+
+.findbar button:disabled {
+  color: var(--neutral-300);
+  cursor: default;
+}
+
+.find-count {
+  font-size: 12px;
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+  min-width: 40px;
+  text-align: center;
+}
+
+.find-sep {
+  width: 1px;
+  height: 18px;
+  background: var(--line);
+  margin: 0 4px;
+}
+
+.find-close {
+  margin-left: auto;
+}
+
+/* ── 캔버스 ──────────────────────────────────────────────────── */
+.canvas {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  display: flex;
+}
+
+.canvas.dragging::after {
+  content: '놓으면 열립니다';
+  position: absolute;
+  inset: 12px;
+  border: 1.5px dashed var(--brand-600);
+  border-radius: var(--radius-lg);
+  background: rgb(94 106 210 / 0.05);
+  color: var(--brand-700);
+  font-size: 15px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.page {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: var(--bg);
+}
+
+/* 빈 상태 — flat, 박스 금지 (Law 7). 위계는 타이포로. */
+.empty {
+  margin: auto;
+  text-align: center;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 48px;
+  border-radius: var(--radius-lg);
+}
+
+.empty:focus-visible {
+  box-shadow: var(--focus-ring);
+}
+
+.empty img {
+  width: 40px;
+  height: 40px;
+  margin-bottom: 8px;
+}
+
+.empty b {
+  font-size: 20px; /* ts-heading */
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+
+.empty span {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--ink-muted);
+}
+
+.empty .hint {
+  margin-top: 16px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.empty kbd {
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink-soft);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+
+.source {
+  flex: 1;
+  margin: 0;
+  padding: 20px;
+  background: var(--neutral-900);
+  color: #d5dbe6;
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ── 상태바 ──────────────────────────────────────────────────── */
+.statusbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  height: 32px;
+  background: var(--surface);
+  border-top: 1px solid var(--line);
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 500; /* ts-caption */
+  color: var(--ink-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.statusbar em {
+  font-style: normal;
+  color: var(--neutral-400);
+}
+
+.status-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.status-right button {
+  height: 24px;
+  min-width: 24px;
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  color: var(--ink-soft);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background var(--dur-fast) var(--ease-out);
+}
+
+.status-right button:hover {
+  background: var(--sunken);
+  color: var(--ink);
+}
+
+.status-right button.on {
+  background: var(--brand-50);
+  color: var(--brand-700);
+}
+
+.status-right button svg {
+  width: 15px;
+  height: 15px;
+  display: block;
+}
+
+.status-right .zoom-value {
+  min-width: 44px;
+  font-size: 12px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.status-sep {
+  width: 1px;
+  height: 16px;
+  background: var(--line);
+  margin: 0 6px;
+}
+
+/* 에러 배너 — danger-soft, flat */
+.error {
+  background: var(--danger-soft);
+  color: var(--danger);
+  padding: 10px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.error::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--danger);
+  flex: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+  }
+}

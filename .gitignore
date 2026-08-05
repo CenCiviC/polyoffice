@@ -1,0 +1,31 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# hwp2html
+rust/hwp-core/target/
+out.html
+*.roundtrip.hwpx
+batch-results.json
+# rust/hwp-core/pkg 는 커밋 (클론 직후 Rust 없이 앱 실행 가능하게). rust 수정 시 bun run wasm:build

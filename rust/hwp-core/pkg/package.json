@@ -1,0 +1,17 @@
+{
+  "name": "hwp-core",
+  "type": "module",
+  "description": "HWP 5.x binary parser producing the hwp2html document-model JSON contract",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "files": [
+    "hwp_core_bg.wasm",
+    "hwp_core.js",
+    "hwp_core.d.ts"
+  ],
+  "main": "hwp_core.js",
+  "types": "hwp_core.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

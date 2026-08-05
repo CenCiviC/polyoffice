@@ -1,0 +1,42 @@
+{
+  "name": "hwp2html",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "convert": "bun run scripts/convert.ts",
+    "validate": "bun run scripts/validate.ts",
+    "tohwpx": "bun run scripts/tohwpx.ts",
+    "compare": "bun run scripts/compare.ts",
+    "edit-sim": "bun run scripts/edit-sim.ts",
+    "wasm:build": "wasm-pack build rust/hwp-core --target web --release",
+    "lint": "oxlint",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "cfb": "^1.2.2",
+    "fflate": "^0.8.3",
+    "hwp.js": "^0.0.3",
+    "pako": "^3.0.1",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "@types/pako": "^3.0.0",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.4",
+    "esbuild": "^0.28.1",
+    "fast-xml-parser": "^5.10.1",
+    "happy-dom": "^20.11.1",
+    "lightningcss-darwin-arm64": "^1.33.0",
+    "oxlint": "^1.75.0",
+    "react-grab": "^0.1.50",
+    "typescript": "~6.0.2",
+    "vite": "^8.2.0",
+    "wasm-pack": "^0.15.0"
+  }
+}
