@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { convertHWP, convertModel, wrapStandalone, type ConvertResult } from './lib/hwp2html'
 import { html2hwpx } from './lib/html2hwpx'
+import { html2docx } from './lib/html2docx'
+import { html2odt } from './lib/html2odt'
 import { normalizeIR } from './lib/ir'
 import { initHwpWasm, parseHwpWasm } from './lib/parser-wasm'
 import wasmUrl from '../rust/hwp-core/pkg/hwp_core_bg.wasm?url'
@@ -198,17 +200,20 @@ export default function App() {
     setEdited(false)
     setFindOpen(false)
     setFindQuery('')
-    if (!/\.hwp$/i.test(file.name)) {
-      setError(`.hwp 파일만 지원합니다 (hwpx는 아직): ${file.name}`)
+    if (!/\.(hwpx?|docx?|odt)$/i.test(file.name)) {
+      setError(`.hwp · .hwpx · .doc · .docx · .odt만 지원합니다: ${file.name}`)
       return
     }
     try {
       const data = new Uint8Array(await file.arrayBuffer())
+      // hwp.js 폴백은 .hwp(CFB) 전용 — zip 계열(hwpx/docx/odt)은 WASM 실패가 곧 실패
+      const isZip = data[0] === 0x50 && data[1] === 0x4b
       let converted: ConvertResult
       try {
         await initHwpWasm({ url: wasmUrl })
         converted = convertModel(parseHwpWasm(data), 'wasm')
       } catch (wasmErr) {
+        if (isZip) throw wasmErr
         console.warn('WASM 파서 실패, hwp.js로 폴백:', wasmErr)
         converted = convertHWP(data)
       }
@@ -773,7 +778,7 @@ export default function App() {
     if (!current) return
     downloadBlob(
       new Blob([current.standalone], { type: 'text/html;charset=utf-8' }),
-      fileName.replace(/\.hwp$/i, '.html'),
+      fileName.replace(/\.(hwpx?|docx?|odt)$/i, '.html'),
     )
   }, [commitEdits, fileName])
 
@@ -786,12 +791,35 @@ export default function App() {
       const { data } = html2hwpx(dom.body, template)
       downloadBlob(
         new Blob([data as BlobPart], { type: 'application/hwp+zip' }),
-        fileName.replace(/\.hwp$/i, '.hwpx'),
+        fileName.replace(/\.(hwpx?|docx?|odt)$/i, '.hwpx'),
       )
     } catch (e) {
       setError(`hwpx 변환 실패: ${e instanceof Error ? e.message : String(e)}`)
     }
   }, [commitEdits, fileName])
+
+  /** 편집 결과 IR을 다른 포맷으로 저장 — 백엔드만 갈아끼운다 */
+  const downloadAs = useCallback(
+    (ext: 'docx' | 'odt') => {
+      const current = commitEdits()
+      if (!current) return
+      try {
+        const dom = new DOMParser().parseFromString(current.body, 'text/html')
+        const { data } = ext === 'docx' ? html2docx(dom.body) : html2odt(dom.body)
+        const mime =
+          ext === 'docx'
+            ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+            : 'application/vnd.oasis.opendocument.text'
+        downloadBlob(
+          new Blob([data as BlobPart], { type: mime }),
+          fileName.replace(/\.(hwpx?|docx?|odt)$/i, `.${ext}`),
+        )
+      } catch (e) {
+        setError(`${ext} 변환 실패: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    },
+    [commitEdits, fileName],
+  )
 
   const printDoc = useCallback(() => {
     editorWin()?.print()
@@ -813,7 +841,7 @@ export default function App() {
         <input
           ref={inputRef}
           type="file"
-          accept=".hwp"
+          accept=".hwp,.hwpx,.doc,.docx,.odt"
           hidden
           onChange={(e) => {
             const file = e.target.files?.[0]
@@ -822,7 +850,11 @@ export default function App() {
           }}
         />
         <div className="appbar-actions">
-          <button className="icon-btn" title="열기 (.hwp)" onClick={() => inputRef.current?.click()}>
+          <button
+            className="icon-btn"
+            title="열기 (.hwp · .hwpx · .doc · .docx · .odt)"
+            onClick={() => inputRef.current?.click()}
+          >
             {Icon.open}
           </button>
           {result && (
@@ -848,6 +880,12 @@ export default function App() {
                 {Icon.downloadHtml}
               </button>
               <span className="appbar-sep" />
+              <button className="save-alt" title="Word 문서로 저장" onClick={() => downloadAs('docx')}>
+                docx
+              </button>
+              <button className="save-alt" title="오픈오피스 문서로 저장" onClick={() => downloadAs('odt')}>
+                odt
+              </button>
               <button className="primary" onClick={() => void downloadHwpx()}>
                 .hwpx 저장
               </button>
@@ -1115,7 +1153,7 @@ export default function App() {
           <div className="empty" onClick={() => inputRef.current?.click()} role="button" tabIndex={0}>
             <img src="/icons/narro-logo-180.png" alt="" />
             <b>한글 문서를 브라우저에서</b>
-            <span>.hwp 파일을 끌어다 놓거나 클릭해서 열기 — 열고, 고치고, .hwpx로 저장</span>
+            <span>한글·워드·오픈오피스 문서를 끌어다 놓거나 클릭해서 열기 — 열고, 고치고, .hwpx로 저장</span>
             <span className="hint">
               서버 업로드 없음 · 전부 로컬 처리 · <kbd>⌘B</kbd> <kbd>⌘I</kbd> <kbd>⌘U</kbd> <kbd>⌘F</kbd> <kbd>⌘Z</kbd>
             </span>

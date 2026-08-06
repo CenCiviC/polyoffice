@@ -11,8 +11,10 @@
  */
 import { unzipSync, zipSync, strToU8, strFromU8 } from 'fflate'
 
+import { xmlSafe } from './ir-model'
+
 const esc = (s: string) =>
-  s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+  xmlSafe(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 
 function rgbToHex(rgb: string): string | null {
   const m = rgb.match(/rgb\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)/)
@@ -476,6 +478,25 @@ export interface HwpxResult {
  * IR HTML 루트(doc-section들을 담은 컨테이너 요소) → .hwpx 바이너리.
  * template = blank.hwpx 바이트.
  */
+/**
+ * content.hpf 매니페스트에 그림을 등록한다.
+ * zip에 파일만 넣어 두면 한글은 열지만 매니페스트로 id를 찾는 읽기 구현은 그림을 놓친다
+ * (한컴이 만든 hwpx도 BinData를 여기에 전부 등록해 둔다).
+ */
+function patchManifest(hpf: string, bins: { path: string; bytes: Uint8Array }[]): string {
+  if (!bins.length) return hpf
+  const items = bins
+    .map(({ path }) => {
+      const name = path.replace(/^BinData\//, '').replace(/\.[^.]+$/, '')
+      const ext = path.split('.').pop() ?? 'png'
+      return `<opf:item id="${name}" href="${path}" media-type="image/${ext}" isEmbeded="1"/>`
+    })
+    .join('')
+  return hpf.includes('</opf:manifest>')
+    ? hpf.replace('</opf:manifest>', `${items}</opf:manifest>`)
+    : hpf
+}
+
 export function html2hwpx(root: Element, template: Uint8Array): HwpxResult {
   const files = unzipSync(template)
   const headerXml = strFromU8(files['Contents/header.xml'])
@@ -527,6 +548,8 @@ export function html2hwpx(root: Element, template: Uint8Array): HwpxResult {
     if (name === 'mimetype') continue
     if (name === 'Contents/section0.xml') out[name] = [strToU8(newSection), { level: 6 }]
     else if (name === 'Contents/header.xml') out[name] = [strToU8(newHeader), { level: 6 }]
+    else if (name === 'Contents/content.hpf')
+      out[name] = [strToU8(patchManifest(strFromU8(data), writer.binFiles())), { level: 6 }]
     else out[name] = [data, { level: 6 }]
   }
   // 이미지 바이너리 (이미 압축 포맷이므로 무압축 저장)

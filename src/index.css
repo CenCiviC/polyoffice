@@ -244,6 +244,18 @@ button {
   border-color: var(--primary-hover);
 }
 
+/* 다른 포맷 저장 — secondary(Law 2: primary는 .hwpx 저장 하나) */
+.appbar-actions button.save-alt {
+  padding: 0 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-soft);
+}
+
+.appbar-actions button.save-alt:hover {
+  background: var(--sunken);
+  color: var(--ink);
+}
+
 /* ── 서식 툴바 (ghost 아이콘 버튼, 크롬은 무채색) ────────────── */
 .fmtbar {
   display: flex;

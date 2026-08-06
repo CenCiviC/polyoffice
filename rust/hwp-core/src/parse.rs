@@ -41,13 +41,19 @@ pub fn parse_document(data: &[u8]) -> Result<DocModel, String> {
     // FileHeader: 256바이트, 시그니처 + 버전 + 속성 플래그
     let header = read_stream(&mut cfb, "/FileHeader")?;
     if header.len() != 256 {
-        return Err(format!("FileHeader는 256바이트여야 함 (실제 {})", header.len()));
+        return Err(format!(
+            "FileHeader는 256바이트여야 함 (실제 {})",
+            header.len()
+        ));
     }
     let signature = String::from_utf8_lossy(&header[0..17]);
     if signature != "HWP Document File" {
         return Err(format!("HWP 시그니처 아님: {signature:?}"));
     }
-    let version = format!("{}.{}.{}.{}", header[35], header[34], header[33], header[32]);
+    let version = format!(
+        "{}.{}.{}.{}",
+        header[35], header[34], header[33], header[32]
+    );
     let props = u32::from_le_bytes([header[36], header[37], header[38], header[39]]);
     let compressed = props & 1 != 0;
     if props & 0b10 != 0 {
@@ -72,20 +78,31 @@ pub fn parse_document(data: &[u8]) -> Result<DocModel, String> {
 
     let mut sections = Vec::new();
     for i in 0..section_count {
-        let raw = maybe_inflate(read_stream(&mut cfb, &format!("/BodyText/Section{i}"))?, compressed)?;
+        let raw = maybe_inflate(
+            read_stream(&mut cfb, &format!("/BodyText/Section{i}"))?,
+            compressed,
+        )?;
         sections.push(parse_section(&raw)?);
     }
 
-    Ok(DocModel { version, info, sections })
+    Ok(DocModel {
+        version,
+        info,
+        sections,
+    })
 }
 
 fn read_stream<F: Read + std::io::Seek + std::io::Write>(
     cfb: &mut cfb::CompoundFile<F>,
     path: &str,
 ) -> Result<Vec<u8>, String> {
-    let mut stream = cfb.open_stream(path).map_err(|e| format!("{path} 없음: {e}"))?;
+    let mut stream = cfb
+        .open_stream(path)
+        .map_err(|e| format!("{path} 없음: {e}"))?;
     let mut buf = Vec::new();
-    stream.read_to_end(&mut buf).map_err(|e| format!("{path} 읽기 실패: {e}"))?;
+    stream
+        .read_to_end(&mut buf)
+        .map_err(|e| format!("{path} 읽기 실패: {e}"))?;
     Ok(buf)
 }
 
@@ -175,7 +192,11 @@ fn visit_doc_info(
                 }
                 r.skip(6)?; // diagonal type/width/color
                 let fill_type = r.u32()?;
-                let background_color = if fill_type == 1 { Some(rgb(r.u32()?)) } else { None };
+                let background_color = if fill_type == 1 {
+                    Some(rgb(r.u32()?))
+                } else {
+                    None
+                };
                 info.border_fills.push(BorderFill { background_color });
             }
             TAG_PARA_SHAPE => {
@@ -291,6 +312,15 @@ fn parse_para_text(data: &[u8], para: &mut RawParagraph) -> Result<(), String> {
                 wpos += 8;
                 read += 16;
             }
+            // 1칸 글자 컨트롤: 24 하이픈 · 25-29 예약/필드끝 · 30 고정폭 빈칸 · 31 묶음 빈칸.
+            // 글자가 아니므로 그대로 흘리면 안 된다 — XML로 내보낼 때 문서가 깨진다.
+            24..=31 => {
+                if code == 30 || code == 31 {
+                    para.chars.push((wpos, CharItem::Text(' ')));
+                }
+                wpos += 1;
+                read += 2;
+            }
             _ => {
                 let ch = match code {
                     // 한컴 PUA: "한글" 제품명의 "한" 로고 글리프 — 한컴 폰트 밖에서는
@@ -351,7 +381,11 @@ fn parse_ctrl(rec: &Record, para: &mut RawParagraph, section: &mut Section) -> R
                 continue;
             }
             let mut lr = ByteReader::new(&child.data);
-            let para_count = if child.data.len() == 30 { lr.u16()? as u32 } else { lr.u32()? };
+            let para_count = if child.data.len() == 30 {
+                lr.u16()? as u32
+            } else {
+                lr.u32()?
+            };
             for _ in 0..para_count {
                 match children.peek() {
                     Some(p) if p.tag == TAG_PARA_HEADER => {
@@ -364,7 +398,9 @@ fn parse_ctrl(rec: &Record, para: &mut RawParagraph, section: &mut Section) -> R
             }
         }
         if !fn_paras.is_empty() {
-            para.footnotes.push(Footnote { paragraphs: fn_paras });
+            para.footnotes.push(Footnote {
+                paragraphs: fn_paras,
+            });
         }
         return Ok(());
     }
@@ -398,9 +434,23 @@ fn find_tag<'a>(rec: &'a Record, tag: u16) -> Option<&'a Record> {
     None
 }
 
+/// 여백 4변(INT16 left/right/top/bottom). -1은 "미지정"이라 default를 물려받는다.
+fn read_padding(r: &mut ByteReader, default: [u16; 4]) -> Result<[u16; 4], String> {
+    let mut out = default;
+    for slot in out.iter_mut() {
+        let v = r.i16()?;
+        if v >= 0 {
+            *slot = v as u16;
+        }
+    }
+    Ok(out)
+}
+
 fn parse_table_ctrl(rec: &Record, section: &mut Section) -> Result<Table, String> {
     let mut table = Table::default();
     let mut children = rec.children.iter().peekable();
+    // 표 기본 안쪽 여백 — 셀이 여백을 -1(미지정)로 두면 이 값을 상속한다
+    let mut default_padding = [0u16; 4];
 
     while let Some(child) = children.next() {
         match child.tag {
@@ -410,7 +460,9 @@ fn parse_table_ctrl(rec: &Record, section: &mut Section) -> Result<Table, String
                 table.row_count = r.u16()?;
                 table.col_count = r.u16()?;
                 table.rows = (0..table.row_count).map(|_| Vec::new()).collect();
-                // cellSpacing(2) + inline margin(8) + rowSize(2×rows) + borderFillID — 미사용
+                r.u16()?; // cellSpacing
+                default_padding = read_padding(&mut r, [0; 4])?;
+                // 이후 rowSize(2×rows) + borderFillID — 미사용
             }
             TAG_LIST_HEADER => {
                 let mut r = ByteReader::new(&child.data);
@@ -447,10 +499,14 @@ fn parse_table_ctrl(rec: &Record, section: &mut Section) -> Result<Table, String
                 let row_span = r.u16()?;
                 let width = r.u32()?;
                 let height = r.u32()?;
-                let padding = [r.u16()?, r.u16()?, r.u16()?, r.u16()?];
+                let padding = read_padding(&mut r, default_padding)?;
                 let border_fill_id = if !r.is_eof() {
                     let v = r.u16()?;
-                    if v > 0 { Some(v - 1) } else { None }
+                    if v > 0 {
+                        Some(v - 1)
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 };

@@ -24,6 +24,7 @@ export function isWasmReady(): boolean {
   return ready
 }
 
+/** .hwp · .doc · .hwpx · .docx · .odt 모두 지원 — WASM 쪽이 컨테이너 내용물로 포맷을 판별한다 */
 export function parseHwpWasm(data: Uint8Array): DocModel {
   if (!ready) throw new Error('WASM 미초기화 — initHwpWasm을 먼저 호출')
   return JSON.parse(parse_hwp_json(data)) as DocModel

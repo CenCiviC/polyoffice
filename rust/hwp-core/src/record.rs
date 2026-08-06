@@ -43,7 +43,11 @@ fn build_level(flat: &mut Vec<(u16, u16, Vec<u8>)>, idx: &mut usize, level: u16)
         let data = std::mem::take(&mut flat[*idx].2);
         *idx += 1;
         let children = build_level(flat, idx, level + 1);
-        out.push(Record { tag, data, children });
+        out.push(Record {
+            tag,
+            data,
+            children,
+        });
     }
     out
 }

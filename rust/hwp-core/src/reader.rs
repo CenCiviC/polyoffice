@@ -37,6 +37,11 @@ impl<'a> ByteReader<'a> {
         Ok(u16::from_le_bytes([b[0], b[1]]))
     }
 
+    pub fn i16(&mut self) -> Result<i16, String> {
+        let b = self.take(2)?;
+        Ok(i16::from_le_bytes([b[0], b[1]]))
+    }
+
     pub fn u32(&mut self) -> Result<u32, String> {
         let b = self.take(4)?;
         Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))

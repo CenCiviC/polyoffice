@@ -37,3 +37,52 @@ fn parses_fixture_document() {
 fn rejects_non_hwp() {
     assert!(hwp_core::parse_document(&[0u8; 64]).is_err());
 }
+
+/// 제어문자가 본문 텍스트로 새어 나오면 안 된다.
+/// XML에 그대로 실리면 결과 docx/odt/hwpx가 통째로 안 열린다
+/// (실제로 .hwp의 "묶음 빈칸" 0x1F가 새어 나와 LibreOffice가 문서를 거부했다).
+#[test]
+fn no_control_chars_leak_into_text() {
+    for name in [
+        "BlogForm_BookReview.hwp",
+        "sample_word97.doc",
+        "word97_table_merges.doc",
+        "moef_press_release.hwpx",
+    ] {
+        let data = std::fs::read(format!(
+            "{}/tests/fixtures/{name}",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap();
+        let model = hwp_core::parse_document_auto(&data).unwrap();
+
+        fn walk(paras: &[hwp_core::Paragraph], name: &str) {
+            for p in paras {
+                for r in &p.runs {
+                    for ch in r.text.chars() {
+                        let c = ch as u32;
+                        let allowed = c == 0x09 || c == 0x0A || c == 0x0D;
+                        assert!(
+                            c >= 0x20 || allowed,
+                            "{name}: 제어문자 U+{c:04X}가 텍스트에 남음 — {:?}",
+                            r.text.chars().take(40).collect::<String>()
+                        );
+                    }
+                }
+                for t in &p.tables {
+                    for row in &t.rows {
+                        for cell in row {
+                            walk(&cell.paragraphs, name);
+                        }
+                    }
+                }
+                for fnote in &p.footnotes {
+                    walk(&fnote.paragraphs, name);
+                }
+            }
+        }
+        for s in &model.sections {
+            walk(&s.paragraphs, name);
+        }
+    }
+}

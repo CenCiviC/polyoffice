@@ -30,7 +30,9 @@ const TEXT_ALIGN: Record<number, string> = { 0: 'justify', 1: 'left', 2: 'right'
 const BASE_CSS = `
   body { margin: 0; background: #e8eaed; font-family: 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif; }
   doc-section.hwp-page { display: block; box-sizing: border-box; background: #fff; margin: 20px auto; box-shadow: 0 1px 3px 1px rgba(60,64,67,.15); overflow: hidden; }
-  .hwp-page p { margin: 0; min-height: 1em; white-space: pre-wrap; word-break: break-all; line-height: 1.6; }
+  /* 한글은 word-break:normal에서도 음절 단위로 끊긴다 — break-all은 라틴/키릴 단어만
+     한가운데서 자른다. overflow-wrap으로 넘칠 때만 강제로 끊는다. */
+  .hwp-page p { margin: 0; min-height: 1em; white-space: pre-wrap; word-break: normal; overflow-wrap: break-word; line-height: 1.6; }
   table.hwp-table { border-collapse: collapse; margin: 2pt 0; }
   table.hwp-table td { border: 1px solid #555; vertical-align: middle; }
   .hwp-page img { max-width: 100%; }
@@ -135,6 +137,7 @@ class Emitter {
       gif: 'image/gif',
       bmp: 'image/bmp',
       webp: 'image/webp',
+      svg: 'image/svg+xml',
     }
     const mime = MIME[bin.ext]
     // 브라우저가 렌더 못 하는 포맷(wmf/emf 등)은 자리표시 텍스트로 강등

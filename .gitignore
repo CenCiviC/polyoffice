@@ -29,3 +29,4 @@ out.html
 *.roundtrip.hwpx
 batch-results.json
 # rust/hwp-core/pkg 는 커밋 (클론 직후 Rust 없이 앱 실행 가능하게). rust 수정 시 bun run wasm:build
+.gstack/

@@ -1,7 +1,7 @@
 /* @ts-self-types="./hwp_core.d.ts" */
 
 /**
- * WASM 진입점: HWP 바이트 → 문서 모델 JSON 문자열.
+ * WASM 진입점: 문서 바이트 → 문서 모델 JSON 문자열 (포맷 자동 판별).
  * TS 쪽(src/lib/parser-wasm.ts)에서 JSON.parse해 DocModel로 쓴다.
  * @param {Uint8Array} data
  * @returns {string}

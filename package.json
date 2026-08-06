@@ -13,7 +13,8 @@
     "edit-sim": "bun run scripts/edit-sim.ts",
     "wasm:build": "wasm-pack build rust/hwp-core --target web --release",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "matrix": "bun run scripts/matrix.ts"
   },
   "dependencies": {
     "cfb": "^1.2.2",

@@ -1,0 +1,520 @@
+//! DOCX(OOXML, ECMA-376) 파싱 — `word/document.xml`을 hwp2html 문서 모델로 매핑한다.
+//! .hwp/.hwpx와 같은 DocModel 계약을 채우므로 방출기(TS)는 포맷을 구분하지 않는다.
+//!
+//! 서식은 "직접 지정(rPr) > 스타일 체인(pStyle/rStyle + basedOn) > docDefaults" 순으로
+//! 해석해 CharShape로 인턴한다. OOXML은 스타일 참조가 흔해서 직접 지정만 읽으면
+//! 대부분의 실제 문서가 서식 없는 맨 텍스트로 나온다.
+
+use std::collections::HashMap;
+
+use roxmltree::Document;
+
+use crate::intern::Interner;
+use crate::model::*;
+use crate::xml::{attr, check_depth, child, children, descendant, hex_rgb, num, toggle, Xml};
+use crate::zipfs::{self, Zip};
+
+/// twip(1/1440in) → hwpunit(1/7200in)
+const TWIP: u32 = 5;
+/// EMU(914400/in) → hwpunit
+const EMU_PER_HWPUNIT: u32 = 127;
+
+// ---------------- 서식 ----------------
+
+#[derive(Clone, Default, PartialEq)]
+struct RunFmt {
+    half_pt: Option<i32>,
+    color: Option<[u8; 3]>,
+    bold: Option<bool>,
+    italic: Option<bool>,
+    underline: Option<bool>,
+    font: Option<String>,
+}
+
+impl RunFmt {
+    /// other(더 구체적인 층)를 self 위에 덮어쓴다.
+    fn overlay(&mut self, other: &RunFmt) {
+        if other.half_pt.is_some() {
+            self.half_pt = other.half_pt;
+        }
+        if other.color.is_some() {
+            self.color = other.color;
+        }
+        if other.bold.is_some() {
+            self.bold = other.bold;
+        }
+        if other.italic.is_some() {
+            self.italic = other.italic;
+        }
+        if other.underline.is_some() {
+            self.underline = other.underline;
+        }
+        if other.font.is_some() {
+            self.font = other.font.clone();
+        }
+    }
+}
+
+fn read_rpr(rpr: Option<Xml>) -> RunFmt {
+    let Some(rpr) = rpr else {
+        return RunFmt::default();
+    };
+    let fonts = child(rpr, "rFonts");
+    // 한국어 문서는 eastAsia가 본문 글꼴 — 없으면 라틴 글꼴로 대체
+    let font = ["eastAsia", "ascii", "hAnsi"]
+        .iter()
+        .find_map(|k| fonts.and_then(|f| attr(f, k)))
+        .map(str::to_string);
+    RunFmt {
+        half_pt: num::<i32>(child(rpr, "sz"), "val"),
+        color: child(rpr, "color")
+            .and_then(|c| attr(c, "val"))
+            .and_then(hex_rgb),
+        bold: toggle(Some(rpr), "b"),
+        italic: toggle(Some(rpr), "i"),
+        underline: child(rpr, "u").map(|u| !matches!(attr(u, "val"), Some("none"))),
+        font,
+    }
+}
+
+/// w:jc → HWP align enum (0 양쪽 · 1 왼쪽 · 2 오른쪽 · 3 가운데 · 4 배분)
+fn read_align(ppr: Option<Xml>) -> Option<u8> {
+    match attr(child(ppr?, "jc")?, "val")? {
+        "left" | "start" => Some(1),
+        "right" | "end" => Some(2),
+        "center" => Some(3),
+        "distribute" => Some(4),
+        _ => Some(0),
+    }
+}
+
+#[derive(Clone, Default)]
+struct StyleDef {
+    based_on: Option<String>,
+    run: RunFmt,
+    align: Option<u8>,
+}
+
+#[derive(Default)]
+struct Styles {
+    defs: HashMap<String, StyleDef>,
+    default_run: RunFmt,
+    default_align: Option<u8>,
+    /// `w:default="1"`인 문단 스타일 — pStyle이 없는 문단이 물려받는다
+    default_para_style: Option<String>,
+}
+
+impl Styles {
+    fn load(doc: Option<&Document>) -> Styles {
+        let mut out = Styles::default();
+        let Some(doc) = doc else { return out };
+        let root = doc.root_element();
+
+        if let Some(dd) = child(root, "docDefaults") {
+            out.default_run = read_rpr(child(dd, "rPrDefault").and_then(|d| child(d, "rPr")));
+            out.default_align = read_align(child(dd, "pPrDefault").and_then(|d| child(d, "pPr")));
+        }
+        for st in children(root, "style") {
+            let Some(id) = attr(st, "styleId") else {
+                continue;
+            };
+            if attr(st, "default") == Some("1") && attr(st, "type") == Some("paragraph") {
+                out.default_para_style = Some(id.to_string());
+            }
+            out.defs.insert(
+                id.to_string(),
+                StyleDef {
+                    based_on: child(st, "basedOn")
+                        .and_then(|b| attr(b, "val"))
+                        .map(str::to_string),
+                    run: read_rpr(child(st, "rPr")),
+                    align: read_align(child(st, "pPr")),
+                },
+            );
+        }
+        out
+    }
+
+    /// basedOn 체인을 뿌리부터 적용한 결과. 순환 참조는 깊이로 끊는다.
+    fn resolve(&self, id: Option<&str>, depth: u8) -> (RunFmt, Option<u8>) {
+        let Some(def) = id.and_then(|i| self.defs.get(i)) else {
+            return (RunFmt::default(), None);
+        };
+        if depth > 12 {
+            return (def.run.clone(), def.align);
+        }
+        let (mut run, mut align) = self.resolve(def.based_on.as_deref(), depth + 1);
+        run.overlay(&def.run);
+        if def.align.is_some() {
+            align = def.align;
+        }
+        (run, align)
+    }
+}
+
+// ---------------- 본체 ----------------
+
+struct Ctx<'z, 'd> {
+    zip: &'z mut Zip<'d>,
+    intern: Interner,
+    /// r:id → 패키지 내부 경로
+    rels: HashMap<String, String>,
+    styles: Styles,
+    /// 표 안의 표 중첩 깊이 — WASM 스택이 얕아서 제한이 없으면 깊은 문서가 크래시한다
+    depth: u8,
+}
+
+/// 실문서의 중첩은 서너 겹이면 충분하다. 넘어가면 더 파고들지 않고 잘라낸다.
+const MAX_NESTING: u8 = 16;
+
+pub fn parse_docx_document(data: &[u8]) -> Result<DocModel, String> {
+    let mut zip = zipfs::open(data)?;
+    let doc_xml = zipfs::text(&mut zip, "word/document.xml")?;
+    let styles_xml = zipfs::text(&mut zip, "word/styles.xml").unwrap_or_default();
+    let footnotes_xml = zipfs::text(&mut zip, "word/footnotes.xml").unwrap_or_default();
+    let rels_xml = zipfs::text(&mut zip, "word/_rels/document.xml.rels").unwrap_or_default();
+
+    check_depth(&doc_xml, "word/document.xml")?;
+    let doc = Document::parse(&doc_xml).map_err(|e| format!("word/document.xml 파싱 실패: {e}"))?;
+    let styles_doc = Document::parse(&styles_xml).ok();
+    let footnotes_doc = Document::parse(&footnotes_xml).ok();
+    let rels_doc = Document::parse(&rels_xml).ok();
+
+    let mut rels = HashMap::new();
+    if let Some(rd) = rels_doc.as_ref() {
+        for rel in rd.root_element().children().filter(|n| n.is_element()) {
+            let (Some(id), Some(target)) = (attr(rel, "Id"), attr(rel, "Target")) else {
+                continue;
+            };
+            if attr(rel, "TargetMode") == Some("External") {
+                continue;
+            }
+            let path = if let Some(abs) = target.strip_prefix('/') {
+                abs.to_string()
+            } else {
+                format!("word/{target}")
+            };
+            rels.insert(id.to_string(), path);
+        }
+    }
+
+    let mut ctx = Ctx {
+        zip: &mut zip,
+        intern: Interner::default(),
+        rels,
+        styles: Styles::load(styles_doc.as_ref()),
+        depth: 0,
+    };
+
+    // 각주 본문: w:id → 문단들. separator/continuationSeparator는 본문이 아니라 제외.
+    let mut footnotes: HashMap<String, Xml> = HashMap::new();
+    if let Some(fd) = footnotes_doc.as_ref() {
+        for fnote in children(fd.root_element(), "footnote") {
+            if matches!(
+                attr(fnote, "type"),
+                Some("separator") | Some("continuationSeparator")
+            ) {
+                continue;
+            }
+            if let Some(id) = attr(fnote, "id") {
+                footnotes.insert(id.to_string(), fnote);
+            }
+        }
+    }
+
+    let body = child(doc.root_element(), "body").ok_or("w:body 없음")?;
+    let mut section = Section::default();
+    read_sect_pr(child(body, "sectPr"), &mut section);
+    section.paragraphs = ctx.blocks(body, &footnotes);
+
+    Ok(DocModel {
+        version: "docx".into(),
+        info: ctx.intern.info,
+        sections: vec![section],
+    })
+}
+
+/// 페이지 크기·여백. sectPr이 없거나 비어 있는 docx(변환기가 만든 파일 등)도 흔해서
+/// A4 세로 + 1인치 여백을 기본값으로 둔다 — 0을 남기면 페이지가 접혀 렌더가 깨진다.
+fn read_sect_pr(sect_pr: Option<Xml>, section: &mut Section) {
+    let sz = sect_pr.and_then(|s| child(s, "pgSz"));
+    section.width = num::<u32>(sz, "w").filter(|v| *v > 0).unwrap_or(11906) * TWIP;
+    section.height = num::<u32>(sz, "h").filter(|v| *v > 0).unwrap_or(16838) * TWIP;
+
+    let m = sect_pr.and_then(|s| child(s, "pgMar"));
+    let at = |name: &str, default: u32| {
+        num::<i64>(m, name)
+            .filter(|v| *v >= 0)
+            .map(|v| v as u32)
+            .unwrap_or(default)
+            * TWIP
+    };
+    section.padding_left = at("left", 1440);
+    section.padding_right = at("right", 1440);
+    section.padding_top = at("top", 1440);
+    section.padding_bottom = at("bottom", 1440);
+    section.header_padding = at("header", 720);
+    section.footer_padding = at("footer", 720);
+}
+
+type Footnotes<'a> = HashMap<String, Xml<'a>>;
+
+impl Ctx<'_, '_> {
+    /// 블록 컨테이너(body·tc)의 자식들 → 문단 목록.
+    /// 표는 자체 문단을 갖지 않으므로 빈 문단에 실어 보낸다(.hwp 경로와 같은 모양).
+    fn blocks(&mut self, parent: Xml, fns: &Footnotes) -> Vec<Paragraph> {
+        let mut out = Vec::new();
+        for node in parent.children().filter(|n| n.is_element()) {
+            match node.tag_name().name() {
+                "p" => out.push(self.paragraph(node, fns)),
+                "tbl" => {
+                    let table = self.table(node, fns);
+                    out.push(Paragraph {
+                        shape_index: self.intern.para_shape(0),
+                        tables: vec![table],
+                        ..Default::default()
+                    });
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    fn paragraph(&mut self, p: Xml, fns: &Footnotes) -> Paragraph {
+        let ppr = child(p, "pPr");
+        // pStyle이 없으면 문서 기본 문단 스타일(w:default="1")을 쓴다 — Word의 동작
+        let style_id = ppr
+            .and_then(|pr| child(pr, "pStyle"))
+            .and_then(|s| attr(s, "val"))
+            .or(self.styles.default_para_style.as_deref());
+        let (style_run, style_align) = self.styles.resolve(style_id, 0);
+
+        let align = read_align(ppr)
+            .or(style_align)
+            .or(self.styles.default_align)
+            .unwrap_or(0);
+        let mut para = Paragraph {
+            shape_index: self.intern.para_shape(align),
+            ..Default::default()
+        };
+
+        // 문단 기본 서식 = docDefaults ← 문단 스타일
+        let mut base = self.styles.default_run.clone();
+        base.overlay(&style_run);
+        self.runs_of(p, &base, &mut para, fns);
+        para
+    }
+
+    /// w:r 및 이를 감싸는 w:hyperlink/w:smartTag/w:ins 등을 훑는다.
+    fn runs_of(&mut self, parent: Xml, base: &RunFmt, para: &mut Paragraph, fns: &Footnotes) {
+        for node in parent.children().filter(|n| n.is_element()) {
+            match node.tag_name().name() {
+                "r" => self.run(node, base, para, fns),
+                "hyperlink" | "smartTag" | "ins" | "sdt" | "sdtContent" | "bookmarkStart" => {
+                    self.runs_of(node, base, para, fns)
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn run(&mut self, r: Xml, base: &RunFmt, para: &mut Paragraph, fns: &Footnotes) {
+        let rpr = child(r, "rPr");
+        let mut fmt = base.clone();
+        // 런 스타일(rStyle) → 직접 지정(rPr) 순으로 덮는다
+        if let Some(id) = rpr
+            .and_then(|p| child(p, "rStyle"))
+            .and_then(|s| attr(s, "val"))
+        {
+            let (run_style, _) = self.styles.resolve(Some(id), 0);
+            fmt.overlay(&run_style);
+        }
+        fmt.overlay(&read_rpr(rpr));
+        let shape = self.shape(&fmt);
+
+        let mut text = String::new();
+        for node in r.children().filter(|n| n.is_element()) {
+            match node.tag_name().name() {
+                "t" | "delText" => text.push_str(&node.text().unwrap_or("").replace('\r', "")),
+                "br" | "cr" => text.push('\n'),
+                "tab" => text.push('\t'),
+                "noBreakHyphen" => text.push('-'),
+                "softHyphen" => {}
+                "drawing" | "pict" | "object" => {
+                    if let Some(img) = self.image(node) {
+                        para.images.push(img);
+                    }
+                }
+                "footnoteReference" | "endnoteReference" => {
+                    if let Some(fnote) = attr(node, "id").and_then(|id| fns.get(id)).copied() {
+                        let paragraphs = self.blocks(fnote, fns);
+                        if !paragraphs.is_empty() {
+                            para.footnotes.push(Footnote { paragraphs });
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if !text.is_empty() {
+            match para.runs.last_mut() {
+                Some(last) if last.char_shape_id == shape => last.text.push_str(&text),
+                _ => para.runs.push(Run {
+                    char_shape_id: shape,
+                    text,
+                }),
+            }
+        }
+    }
+
+    /// 해석한 런 서식 → charShapeId
+    fn shape(&mut self, fmt: &RunFmt) -> u32 {
+        let font_id = self.intern.font(fmt.font.as_deref());
+        let mut attr = 0u32;
+        if fmt.italic == Some(true) {
+            attr |= 0b01;
+        }
+        if fmt.bold == Some(true) {
+            attr |= 0b10;
+        }
+        if fmt.underline == Some(true) {
+            attr |= 1 << 2;
+        }
+        // w:sz는 하프포인트 — 1/100pt로 바꾼다. 미지정은 Word 기본 10pt.
+        let base = fmt.half_pt.filter(|v| *v > 0).unwrap_or(20) * 50;
+        self.intern
+            .char_shape(base, fmt.color.unwrap_or([0, 0, 0]), attr, font_id)
+    }
+
+    fn image(&mut self, node: Xml) -> Option<Image> {
+        // DrawingML은 a:blip/@r:embed, 구형 VML은 v:imagedata/@r:id
+        let rid = descendant(node, "blip")
+            .and_then(|b| attr(b, "embed"))
+            .or_else(|| descendant(node, "imagedata").and_then(|i| attr(i, "id")))?;
+        let path = self.rels.get(rid)?.clone();
+
+        let bytes = zipfs::bytes(self.zip, &path).ok()?;
+        let bin_data_id = self.intern.bin_data(&path, &zipfs::ext_of(&path), &bytes);
+
+        let extent = descendant(node, "extent");
+        let emu = |name: &str| num::<u64>(extent, name).unwrap_or(0) as u32 / EMU_PER_HWPUNIT;
+        Some(Image {
+            bin_data_id,
+            width: emu("cx"),
+            height: emu("cy"),
+        })
+    }
+
+    fn table(&mut self, tbl: Xml, fns: &Footnotes) -> Table {
+        if self.depth >= MAX_NESTING {
+            return Table::default();
+        }
+        self.depth += 1;
+        let out = self.table_inner(tbl, fns);
+        self.depth -= 1;
+        out
+    }
+
+    fn table_inner(&mut self, tbl: Xml, fns: &Footnotes) -> Table {
+        let grid: Vec<u32> = child(tbl, "tblGrid")
+            .map(|g| {
+                children(g, "gridCol")
+                    .map(|c| num::<u32>(Some(c), "w").unwrap_or(0) * TWIP)
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let rows: Vec<Xml> = children(tbl, "tr").collect();
+        let mut table = Table {
+            row_count: rows.len() as u16,
+            col_count: grid.len() as u16,
+            rows: rows.iter().map(|_| Vec::new()).collect(),
+            caption: Vec::new(),
+        };
+
+        // 표 기본 셀 여백 (Word 기본값은 좌우 108twip)
+        let tbl_mar = child(tbl, "tblPr").and_then(|p| child(p, "tblCellMar"));
+        let default_padding = cell_margin(tbl_mar, [108 * TWIP as u16, 108 * TWIP as u16, 0, 0]);
+
+        // 세로 병합(vMerge): restart 셀을 기억해 두고 continue가 나올 때마다 rowSpan을 늘린다
+        let mut anchors: HashMap<u16, (usize, usize)> = HashMap::new();
+
+        for (ri, tr) in rows.iter().enumerate() {
+            let mut gcol: u16 = 0;
+            for tc in children(*tr, "tc") {
+                let pr = child(tc, "tcPr");
+                let col_span = pr
+                    .and_then(|p| child(p, "gridSpan"))
+                    .and_then(|g| num::<u16>(Some(g), "val"))
+                    .unwrap_or(1)
+                    .max(1);
+                let vmerge = pr.and_then(|p| child(p, "vMerge"));
+                let continues = vmerge.is_some_and(|v| attr(v, "val") != Some("restart"));
+
+                if continues {
+                    if let Some(&(ar, ai)) = anchors.get(&gcol) {
+                        if let Some(anchor) = table.rows.get_mut(ar).and_then(|r| r.get_mut(ai)) {
+                            anchor.row_span += 1;
+                        }
+                    }
+                    gcol += col_span;
+                    continue;
+                }
+
+                // 폭: tcW(dxa)가 우선, 없으면 tblGrid에서 걸치는 열들을 더한다
+                let width = pr
+                    .and_then(|p| child(p, "tcW"))
+                    .filter(|w| attr(*w, "type") != Some("pct"))
+                    .and_then(|w| num::<u32>(Some(w), "w"))
+                    .filter(|w| *w > 0)
+                    .map(|w| w * TWIP)
+                    .unwrap_or_else(|| {
+                        let from = gcol as usize;
+                        let to = (from + col_span as usize).min(grid.len());
+                        grid.get(from..to).map(|s| s.iter().sum()).unwrap_or(0)
+                    });
+
+                let background = pr
+                    .and_then(|p| child(p, "shd"))
+                    .and_then(|s| attr(s, "fill"))
+                    .and_then(hex_rgb);
+
+                let cell = Cell {
+                    col: gcol,
+                    row: ri as u16,
+                    col_span,
+                    row_span: 1,
+                    width,
+                    height: 0,
+                    padding: cell_margin(pr.and_then(|p| child(p, "tcMar")), default_padding),
+                    border_fill_id: background.map(|c| self.intern.fill(c)),
+                    paragraphs: self.blocks(tc, fns),
+                };
+                table.rows[ri].push(cell);
+                if vmerge.is_some() {
+                    anchors.insert(gcol, (ri, table.rows[ri].len() - 1));
+                }
+                gcol += col_span;
+            }
+        }
+        table
+    }
+}
+
+/// w:tcMar/w:tblCellMar → [left, right, top, bottom] (hwpunit)
+fn cell_margin(node: Option<Xml>, default: [u16; 4]) -> [u16; 4] {
+    let mut out = default;
+    for (slot, name) in out.iter_mut().zip(["left", "right", "top", "bottom"]) {
+        if let Some(v) = node
+            .and_then(|n| child(n, name))
+            .and_then(|e| num::<i64>(Some(e), "w"))
+        {
+            if v >= 0 {
+                *slot = (v as u64 * TWIP as u64).min(u16::MAX as u64) as u16;
+            }
+        }
+    }
+    out
+}
