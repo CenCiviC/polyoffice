@@ -22,7 +22,7 @@ hwp 가져오기 ─┼─→ canonical IR(HTML) ─┼─→ docx (OOXML)
 
 ## 버전
 
-- 루트 `<doc-section data-ir="0.1.0">`에 스펙 버전을 박는다.
+- 루트 `<doc-section data-ir="0.2.0">`에 스펙 버전을 박는다 (`IR_VERSION`이 진실원).
 - 어휘 추가 = minor, 기존 어휘의 의미 변경 = major (기존 문서 마이그레이션 필요).
 
 ---
@@ -140,15 +140,20 @@ hwp 가져오기 ─┼─→ canonical IR(HTML) ─┼─→ docx (OOXML)
 
 ## 로드맵
 
+> 어휘 단위 로드맵은 아래, **작업 순서와 선행 조건은 [TODO.md](TODO.md)** 를 본다.
+
 - **v0.1**: READ 어휘(문단·런·표·구역) + 린터. hwp→IR이 린터 통과. ✅
-- **v0.2 (현재)**: WRITE 백엔드 hwpx — 템플릿+주입(blank.hwpx, MIT/pypandoc-hwpx),
-  hwp→IR→hwpx 왕복 E2E(`bun run tohwpx`) 통과. 남은 것: 한글/한컴독스 실기기 열기 검증,
-  `img` READ/WRITE, font-family 매핑.
+- **v0.1.x**: WRITE 백엔드 hwpx — 템플릿+주입(blank.hwpx, MIT/pypandoc-hwpx),
+  hwp→IR→hwpx 왕복 E2E(`bun run tohwpx`) 통과. 이후 docx·odt 백엔드와 `img` READ/WRITE,
+  font-family 매핑까지. ✅ (한글·한컴독스 실기기 열기 검증은 아직)
 - **v0.2.0 (현재)**: 인라인 어휘 `a[href]`·`sup`/`sub`, 문단 여백 어휘 4종
   (`margin-left`·`text-indent`·`margin-top`·`margin-bottom`). 셋 다 편집기 UI + 쓰기 3종.
   **읽기**: 다섯 리더가 첨자·문단 여백을 채운다. 하이퍼링크는 docx·odt·hwpx만
   (hwp·doc은 필드 구조라 미구현). 리더별 상태는 README "현재 지원 범위" 표를 본다.
   **남은 것**: hwpx 하이퍼링크 **쓰기** — 한글에서 링크 하나만 넣고 저장한 golden file로
   `Command` 문자열 문법을 확정해야 강등을 걷어낼 수 있다.
-- **v0.3**: 각주·개요번호·pagebreak. docx 백엔드(직접 또는 Pandoc 브리지).
-- **v0.4**: 수식(LaTeX→한글수식 변환기)·글상자·머리말/꼬리말. 보존-패치 아키텍처.
+- **v0.3 (다음)**: 목록 numbering(지금은 `"• "` 텍스트 강등) → 개요번호. 둘은 같은
+  전역 numbering 테이블을 쓰므로 이 순서를 지킨다. 이어서 표 셀 테두리·세로 정렬.
+- **v0.4**: 머리말/꼬리말 + `doc-field`(쪽번호). 새 개념(필드)이 들어오고 hwpx 매핑이
+  ◐라 golden file이 선행한다.
+- **v0.5+**: 수식(LaTeX→한글수식 변환기)·글상자·단(열)·목차. 보존-패치 아키텍처.
