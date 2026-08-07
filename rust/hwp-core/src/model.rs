@@ -37,10 +37,20 @@ pub struct CharShape {
     /// 언어별 장평 중 한글(첫 번째) 값, %
     pub ratio: u8,
     pub color: [u8; 3],
-    /// bit0 italic · bit1 bold · bit2-3 underline(1=밑줄, 3=윗줄)
+    /// **.hwp CHAR_SHAPE 속성 u32를 그대로 쓰는 계약** — .hwp 리더는 원시 값을 통과시키고,
+    /// 나머지 넷은 해석한 결과를 같은 비트에 채운다.
+    /// bit0 기울임 · bit1 진하게 · bit2-3 밑줄(1=아래, 3=위) · bit4-7 밑줄모양 ·
+    /// bit8-9 외곽선 · bit10-11 그림자 · bit12 양각 · bit13 음각 · bit14 위첨자 · bit15 아래첨자
     pub attr: u32,
     pub font_id: u16,
 }
+
+/// CharShape.attr 비트 — 리더 다섯이 같은 이름을 쓴다.
+pub const ATTR_ITALIC: u32 = 1 << 0;
+pub const ATTR_BOLD: u32 = 1 << 1;
+/// bit4-7은 .hwp의 **밑줄 모양**이라 첨자에 쓰면 안 된다 — HWP가 정한 자리는 14/15다.
+pub const ATTR_SUPER: u32 = 1 << 14;
+pub const ATTR_SUB: u32 = 1 << 15;
 
 #[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -48,11 +58,28 @@ pub struct BorderFill {
     pub background_color: Option<[u8; 3]>,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ParaShape {
     /// 0 양쪽 · 1 왼쪽 · 2 오른쪽 · 3 가운데 (HWP align enum)
     pub align: u8,
+    /// 왼쪽 들여쓰기 (hwpunit)
+    pub indent: i32,
+    /// 첫 줄 들여쓰기 (hwpunit) — **음수면 내어쓰기**
+    pub first_line: i32,
+    /// 문단 앞 여백 (hwpunit)
+    pub space_before: i32,
+    /// 문단 뒤 여백 (hwpunit)
+    pub space_after: i32,
+}
+
+/// 문단 여백 묶음 (hwpunit). 인터너 키로도 쓰이므로 Hash/Eq를 갖는다.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Hash, Debug)]
+pub struct ParaMargins {
+    pub indent: i32,
+    pub first_line: i32,
+    pub space_before: i32,
+    pub space_after: i32,
 }
 
 #[derive(Serialize, Debug, Default)]
@@ -96,11 +123,14 @@ pub struct Image {
     pub height: u32,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Serialize, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Run {
     pub char_shape_id: u32,
     pub text: String,
+    /// 하이퍼링크 대상. 없으면 직렬화에서 빠진다 (기존 JSON과 모양을 유지하려고).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
 }
 
 #[derive(Serialize, Debug, Default)]

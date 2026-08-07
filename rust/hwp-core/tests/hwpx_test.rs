@@ -20,6 +20,27 @@ fn parses_hwpx_fixture() {
     assert_eq!(sec.height, 84188);
     assert!(sec.padding_left > 0 && sec.header_padding > 0);
 
+    // 문단 여백: 이 실문서(재정경제부 보도자료)에는 내어쓰기 문단모양이 9개 있다.
+    // (header.xml에는 hc:intent가 18번 나오지만 hp:switch/hp:default 두 갈래에 같은 값이
+    //  두 번 적혀 있어서다 — 리더는 첫 갈래만 읽는다.)
+    // 값이 음수라 부호를 흘리면 조용히 반대로 들여쓰기가 된다 — 그래서 부호까지 단언한다.
+    let hanging: Vec<i32> = model
+        .info
+        .para_shapes
+        .iter()
+        .map(|p| p.first_line)
+        .filter(|v| *v != 0)
+        .collect();
+    assert_eq!(hanging.len(), 9, "내어쓰기 문단모양 개수");
+    assert!(
+        hanging.iter().all(|v| *v < 0),
+        "내어쓰기는 전부 음수여야 한다: {hanging:?}"
+    );
+    assert!(
+        hanging.contains(&-16800),
+        "가장 큰 내어쓰기(-16800 hwpunit = -168pt) 누락: {hanging:?}"
+    );
+
     let json = serde_json::to_string(&model).unwrap();
     for text in ["2026년 세제개편안", "세제발전심의위원회", "보도시점"] {
         assert!(json.contains(text), "본문에 {text:?} 누락");

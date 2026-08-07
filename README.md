@@ -35,6 +35,13 @@ run 스타일 충실도가 더 높다 (예: 양식 안내문의 빨간 기울임
 `normalizeIR()`(편집기가 만든 div→p, 편집 속성 제거, 새 블록 data-id 부여)를 거쳐
 .html/.hwpx 저장에 반영된다. `bun run edit-sim`이 이 경로를 헤드리스로 검증한다.
 
+**페이지 설정**(용지·방향·여백)은 새 어휘가 아니라 **이미 있는 어휘를 만질 수 있게 한 것**이다
+— `doc-section`의 width·min-height·padding은 리더가 채우고 세 백엔드가 모두 쓰는데 편집 수단만
+없었다. 값은 뷰어 CSS가 섞이는 `getComputedStyle`이 아니라 **백엔드와 같은 파서**(`toPt`·
+`readPadding`)로 인라인 style에서 읽는다 — 다이얼로그가 보여주는 값과 저장될 값을 같게 하려고.
+규격에 없는 크기는 A4라고 우기지 않고 크기를 그대로 표시한다(`139.7×180.3mm`).
+`bun run page-sim`이 왕복을 검증한다.
+
 변환 결과물은 임의 HTML이 아니라 **Document IR**(HTML 기반 중간언어, [docs/IR-SPEC.md](docs/IR-SPEC.md))
 계약을 따른다. LLM 생성·편집기·백엔드(hwpx/docx)가 전부 이 어휘로 수렴하는 컴파일러 구조.
 
@@ -61,6 +68,9 @@ bun run validate <input>            # 변환 결과가 IR 계약을 지키는지
 bun run tohwpx <input> [out.hwpx]   # 입력 → IR → hwpx 왕복 E2E + 검증
 bun run export <ir.html> [out-dir]  # 반대 방향 — 손으로 쓴 IR HTML → hwpx·docx·odt (+미리보기)
 bun run matrix [out-dir]            # SOT 한 장 → 전 포맷 쓰기 → 되읽기 왕복 대조
+bun run page-sim                    # 페이지 설정 읽기·쓰기 왕복 + 백엔드 도달 검증
+bun run vocab-sim                   # IR v0.2 어휘(링크·첨자·문단여백) 계약 + 쓰기 3종 검증
+bun run shots [문서] [출력]          # 진짜 Chrome에 편집기를 띄워 화면 캡처 (dev 서버 먼저)
 bun run compare <input.hwp>         # Rust WASM vs hwp.js 파서 골든 비교
 bun run wasm:build                  # Rust 파서 재빌드 (rust/hwp-core 수정 후)
 cd rust/hwp-core && cargo test      # Rust 파서 유닛/통합 테스트
@@ -79,8 +89,16 @@ DOM 해석은 `src/lib/ir-model.ts`가 한 번만 하고(중립 문서 트리), 
 - `html2docx.ts` — OOXML 패키지를 통째로 생성 (필요한 부품이 적어 템플릿이 필요 없다)
 - `html2odt.ts` — ODF. 서식을 인라인으로 못 쓰기 때문에 자동 스타일로 모아 등록한다
 
-공통 지원: 문단 정렬 · 글자스타일(크기/색/굵기/기울임/밑줄/취소선/글꼴) · 표(가로·세로 병합,
+공통 지원: 문단 정렬 · 글자스타일(크기/색/굵기/기울임/밑줄/취소선/글꼴/**위·아래첨자**) ·
+**문단 여백**(들여쓰기·첫 줄·앞뒤) · **하이퍼링크**(docx·odt) · 표(가로·세로 병합,
 열 폭, 셀 배경) · 그림(바이트 그대로). 앱에서는 `.hwpx 저장` 버튼과 `docx`·`odt` 보조 버튼.
+
+**하이퍼링크는 hwpx에서만 강등된다** — 주소를 버리고 글자만 남긴다. OWPML의
+`fieldBegin type="HYPERLINK"`는 [hwpxlib](https://github.com/neolord0/hwpxlib)의 `FieldType`으로
+확인했지만 `hp:stringParam name="Command"`의 문자열 문법이 미확인이라, 추측해서 쓰면
+한글이 파일을 아예 못 여는 쪽이 더 위험하다고 봤다. 한글에서 링크 하나만 넣고 저장한
+golden file이 생기면 걷어낸다. 주소를 지켜야 하면 docx·odt로 저장하면 된다.
+
 **실기기 검증**: 우리 리더끼리의 왕복 말고, 남이 만든 구현으로도 확인했다.
 
 | 검증자 | docx | odt | hwpx |
@@ -92,14 +110,37 @@ DOM 해석은 `src/lib/ir-model.ts`가 한 번만 하고(중립 문서 트리), 
 실문서(관공서 hwp 1,716문단·55표)를 docx·odt로 내보내 LibreOffice에서 정상 렌더까지 확인.
 **한글·한컴독스로 직접 열어본 확인은 아직** — 이 머신에 한글이 없다.
 
+이 표는 **표·서식·그림까지의 기존 기능** 기준이다. v0.2에서 더한 링크·첨자·문단 여백은
+아직 외부 구현으로 확인하지 못했다 — 지금 이 머신에 LibreOffice도 pandoc도 없다.
+화면 쪽은 `bun run shots`로 실제 Chrome에 띄워 눈으로 확인한다.
+
 **읽기(hwp·doc·hwpx·docx·odt → IR)** — 다섯 리더가 공통으로 채우는 것:
 
 - 문단 텍스트 + 글자 스타일 (크기·색·굵기·기울임·밑줄, 폰트 패밀리)
-- 문단 정렬 (양쪽/왼쪽/오른쪽/가운데)
+- 문단 정렬 (양쪽/왼쪽/오른쪽/가운데) · **문단 여백**(들여쓰기·첫 줄·앞뒤)
+- **위/아래첨자** · **하이퍼링크**(포맷별로 다름 — 아래 표)
 - 표: 중첩 표, colspan/rowspan, 셀 크기(pt), 셀 배경색, 패딩
 - 이미지 → data URI, 각주/미주
 - 페이지 크기/여백 (모든 길이를 hwpunit 1/7200in으로 정규화)
 - 결과물: standalone HTML (인라인 스타일, 외부 의존 없음)
+
+리더별 새 어휘 상태:
+
+| | hwp | doc | hwpx | docx | odt |
+|---|:--:|:--:|:--:|:--:|:--:|
+| 첨자 | ✓ | ✓ | ✓ | ✓ | ✓ |
+| 문단 여백 | ✓ | ◐ | ✓ | ✓ | ✓ |
+| 하이퍼링크 | ✗ | ✗ | ◐ | ✓ | ✓ |
+
+`.doc` 여백은 sprm 해석을 넣었지만 **테스트 코퍼스에 들여쓰기가 있는 문단이 없어
+0x840F/0x8411이 실제로 발화하지 않았다** — 확인된 건 문단 뒤 여백뿐이라 ◐다
+(`doc_paragraph_margins_are_sane`가 쓰레기 값만 막는다).
+hwpx 하이퍼링크는 필드에서 주소를 **최선노력**으로 꺼낸다 — `Command` 문법이 미확인이라
+잘못 뽑으면 링크가 안 생기고, 방출기가 `isSafeHref`로 한 번 더 거른다.
+`.hwp`·`.doc`의 하이퍼링크는 필드 구조라 아직 안 읽는다.
+
+`.hwp`의 attr 비트는 **HWP CHAR_SHAPE 계약 그대로** 쓴다(원시 u32 통과). 첨자를 bit4/5에
+두면 HWP의 **밑줄 모양(bit4-7)과 충돌**하므로 HWP가 정한 bit14/15를 쓴다.
 
 포맷별로 다른 점:
 
@@ -130,6 +171,10 @@ DOM 해석은 `src/lib/ir-model.ts`가 한 번만 하고(중립 문서 트리), 
 ## 아직 안 되는 것
 
 - 머리말/꼬리말, 개요 번호, 글머리표 (목록 텍스트는 나오지만 번호·기호는 빠진다)
+- `.hwp`·`.doc`의 하이퍼링크 읽기 (필드 구조 — 위 표 참조)
+- hwpx 하이퍼링크 **쓰기** (위 강등 설명 참조)
+- 내어쓰기가 왼쪽 들여쓰기보다 큰 문단은 첫 줄이 본문 밖으로 나가므로 방출기가 잘라낸다
+  (실문서에 `left=0`인데 `intent=-168pt`인 목록 문단이 있다 — 번호를 한글 엔진이 붙이는 경우)
 - 도형 개체 (선/사각형 등 — 글상자 텍스트는 hwpx에서만 건짐)
 - `.doc`의 구역 설정(A4 세로로 고정)·셀 배경 · 중첩 표는 한 겹으로 펼쳐진다
 - `.doc`의 메타파일 그림(WMF·EMF) — deflate로 눌려 있고 브라우저가 못 그려서 자리표시로 강등
@@ -161,6 +206,7 @@ src/lib/ir-model.ts   # IR HTML → 중립 문서 트리 (쓰기 백엔드 공�
 src/lib/html2hwpx.ts  # 쓰기: IR HTML → hwpx (템플릿+주입, fflate)
 src/lib/html2docx.ts  # 쓰기: IR → docx (OOXML 패키지 생성)
 src/lib/html2odt.ts   # 쓰기: IR → odt (ODF, 자동 스타일 수집)
+src/lib/page-setup.ts # 페이지 설정 — doc-section의 용지·방향·여백 읽기/쓰기 (진실원은 mm 크기)
 public/blank.hwpx     # hwpx 템플릿 (pypandoc-hwpx, MIT)
 src/App.tsx           # 드롭존 → 미리보기(iframe srcDoc) / 소스 보기 / 복사·다운로드
 scripts/convert.ts    # CLI — 같은 변환기를 bun에서 실행 (E2E 검증용)
@@ -168,5 +214,8 @@ scripts/validate.ts   # CLI — 변환 결과의 IR 계약 검증 (CI 게이트�
 scripts/tohwpx.ts     # CLI — hwp→IR→hwpx 왕복 + XML/텍스트/zip 규칙 검증
 scripts/export.ts     # CLI — 손으로 쓴 IR HTML → hwpx·docx·odt (린터 게이트 + 되읽기 대조)
 scripts/matrix.ts     # CLI — SOT 한 장으로 전 포맷 쓰기·되읽기 대조 (변환 매트릭스)
+scripts/page-setup-sim.ts # CLI — 페이지 설정 왕복 + 규격 밖 용지 처리 검증
+scripts/vocab-sim.ts  # CLI — IR v0.2 어휘(링크·첨자·문단여백) 계약 + 쓰기 3종 검증
+scripts/shots.ts      # CLI — 설치된 Chrome으로 편집기 화면 캡처 (눈으로 보는 검증)
 scripts/probe*.ts     # hwp.js 파싱 탐색용 스크립트
 ```

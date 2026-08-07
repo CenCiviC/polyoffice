@@ -29,6 +29,8 @@ struct RunFmt {
     italic: Option<bool>,
     underline: Option<bool>,
     font: Option<String>,
+    /// w:vertAlign — 1 위첨자 · 2 아래첨자 (0/None은 보통)
+    vert_align: Option<u8>,
 }
 
 impl RunFmt {
@@ -52,6 +54,9 @@ impl RunFmt {
         if other.font.is_some() {
             self.font = other.font.clone();
         }
+        if other.vert_align.is_some() {
+            self.vert_align = other.vert_align;
+        }
     }
 }
 
@@ -74,6 +79,71 @@ fn read_rpr(rpr: Option<Xml>) -> RunFmt {
         italic: toggle(Some(rpr), "i"),
         underline: child(rpr, "u").map(|u| !matches!(attr(u, "val"), Some("none"))),
         font,
+        vert_align: child(rpr, "vertAlign")
+            .and_then(|v| attr(v, "val"))
+            .map(|v| match v {
+                "superscript" => 1,
+                "subscript" => 2,
+                _ => 0,
+            }),
+    }
+}
+
+/// 문단 여백 — 스타일 체인에서 덮어쓸 수 있게 층마다 Option으로 들고 있는다.
+#[derive(Clone, Copy, Default, PartialEq)]
+struct MarginFmt {
+    indent: Option<i32>,
+    first_line: Option<i32>,
+    before: Option<i32>,
+    after: Option<i32>,
+}
+
+impl MarginFmt {
+    fn overlay(&mut self, o: &MarginFmt) {
+        if o.indent.is_some() {
+            self.indent = o.indent;
+        }
+        if o.first_line.is_some() {
+            self.first_line = o.first_line;
+        }
+        if o.before.is_some() {
+            self.before = o.before;
+        }
+        if o.after.is_some() {
+            self.after = o.after;
+        }
+    }
+
+    fn to_margins(self) -> ParaMargins {
+        ParaMargins {
+            indent: self.indent.unwrap_or(0),
+            first_line: self.first_line.unwrap_or(0),
+            space_before: self.before.unwrap_or(0),
+            space_after: self.after.unwrap_or(0),
+        }
+    }
+}
+
+/// w:ind(들여쓰기)·w:spacing(앞뒤 여백) → hwpunit.
+/// `w:hanging`은 내어쓰기라 **부호를 뒤집어** first_line 음수로 담는다 — IR 계약이 그렇게 정의돼 있다.
+fn read_margins(ppr: Option<Xml>) -> MarginFmt {
+    let Some(ppr) = ppr else {
+        return MarginFmt::default();
+    };
+    let twip = |v: i32| v * TWIP as i32;
+    let ind = child(ppr, "ind");
+    let spacing = child(ppr, "spacing");
+    let hanging = ind.and_then(|i| num::<i32>(Some(i), "hanging"));
+    MarginFmt {
+        indent: ind.and_then(|i| num::<i32>(Some(i), "left")).map(twip),
+        first_line: match hanging {
+            Some(h) => Some(twip(-h)),
+            None => ind
+                .and_then(|i| num::<i32>(Some(i), "firstLine"))
+                .map(twip),
+        },
+        before: spacing.and_then(|s| num::<i32>(Some(s), "before")).map(twip),
+        after: spacing.and_then(|s| num::<i32>(Some(s), "after")).map(twip),
     }
 }
 
@@ -93,6 +163,7 @@ struct StyleDef {
     based_on: Option<String>,
     run: RunFmt,
     align: Option<u8>,
+    margins: MarginFmt,
 }
 
 #[derive(Default)]
@@ -100,6 +171,7 @@ struct Styles {
     defs: HashMap<String, StyleDef>,
     default_run: RunFmt,
     default_align: Option<u8>,
+    default_margins: MarginFmt,
     /// `w:default="1"`인 문단 스타일 — pStyle이 없는 문단이 물려받는다
     default_para_style: Option<String>,
 }
@@ -113,6 +185,7 @@ impl Styles {
         if let Some(dd) = child(root, "docDefaults") {
             out.default_run = read_rpr(child(dd, "rPrDefault").and_then(|d| child(d, "rPr")));
             out.default_align = read_align(child(dd, "pPrDefault").and_then(|d| child(d, "pPr")));
+            out.default_margins = read_margins(child(dd, "pPrDefault").and_then(|d| child(d, "pPr")));
         }
         for st in children(root, "style") {
             let Some(id) = attr(st, "styleId") else {
@@ -129,6 +202,7 @@ impl Styles {
                         .map(str::to_string),
                     run: read_rpr(child(st, "rPr")),
                     align: read_align(child(st, "pPr")),
+                    margins: read_margins(child(st, "pPr")),
                 },
             );
         }
@@ -136,19 +210,20 @@ impl Styles {
     }
 
     /// basedOn 체인을 뿌리부터 적용한 결과. 순환 참조는 깊이로 끊는다.
-    fn resolve(&self, id: Option<&str>, depth: u8) -> (RunFmt, Option<u8>) {
+    fn resolve(&self, id: Option<&str>, depth: u8) -> (RunFmt, Option<u8>, MarginFmt) {
         let Some(def) = id.and_then(|i| self.defs.get(i)) else {
-            return (RunFmt::default(), None);
+            return (RunFmt::default(), None, MarginFmt::default());
         };
         if depth > 12 {
-            return (def.run.clone(), def.align);
+            return (def.run.clone(), def.align, def.margins);
         }
-        let (mut run, mut align) = self.resolve(def.based_on.as_deref(), depth + 1);
+        let (mut run, mut align, mut margins) = self.resolve(def.based_on.as_deref(), depth + 1);
         run.overlay(&def.run);
         if def.align.is_some() {
             align = def.align;
         }
-        (run, align)
+        margins.overlay(&def.margins);
+        (run, align, margins)
     }
 }
 
@@ -157,8 +232,10 @@ impl Styles {
 struct Ctx<'z, 'd> {
     zip: &'z mut Zip<'d>,
     intern: Interner,
-    /// r:id → 패키지 내부 경로
+    /// r:id → 패키지 내부 경로 (그림 등 내부 파트)
     rels: HashMap<String, String>,
+    /// r:id → 외부 주소. 하이퍼링크는 `TargetMode="External"`이라 위 지도에 안 들어간다.
+    ext_rels: HashMap<String, String>,
     styles: Styles,
     /// 표 안의 표 중첩 깊이 — WASM 스택이 얕아서 제한이 없으면 깊은 문서가 크래시한다
     depth: u8,
@@ -181,12 +258,14 @@ pub fn parse_docx_document(data: &[u8]) -> Result<DocModel, String> {
     let rels_doc = Document::parse(&rels_xml).ok();
 
     let mut rels = HashMap::new();
+    let mut ext_rels = HashMap::new();
     if let Some(rd) = rels_doc.as_ref() {
         for rel in rd.root_element().children().filter(|n| n.is_element()) {
             let (Some(id), Some(target)) = (attr(rel, "Id"), attr(rel, "Target")) else {
                 continue;
             };
             if attr(rel, "TargetMode") == Some("External") {
+                ext_rels.insert(id.to_string(), target.to_string());
                 continue;
             }
             let path = if let Some(abs) = target.strip_prefix('/') {
@@ -202,6 +281,7 @@ pub fn parse_docx_document(data: &[u8]) -> Result<DocModel, String> {
         zip: &mut zip,
         intern: Interner::default(),
         rels,
+        ext_rels,
         styles: Styles::load(styles_doc.as_ref()),
         depth: 0,
     };
@@ -288,38 +368,65 @@ impl Ctx<'_, '_> {
             .and_then(|pr| child(pr, "pStyle"))
             .and_then(|s| attr(s, "val"))
             .or(self.styles.default_para_style.as_deref());
-        let (style_run, style_align) = self.styles.resolve(style_id, 0);
+        let (style_run, style_align, style_margins) = self.styles.resolve(style_id, 0);
 
         let align = read_align(ppr)
             .or(style_align)
             .or(self.styles.default_align)
             .unwrap_or(0);
+        // 여백도 정렬과 같은 순서로 겹친다: docDefaults ← 문단 스타일 ← 직접 지정
+        let mut margins = self.styles.default_margins;
+        margins.overlay(&style_margins);
+        margins.overlay(&read_margins(ppr));
         let mut para = Paragraph {
-            shape_index: self.intern.para_shape(align),
+            shape_index: self.intern.para_shape_m(align, margins.to_margins()),
             ..Default::default()
         };
 
         // 문단 기본 서식 = docDefaults ← 문단 스타일
         let mut base = self.styles.default_run.clone();
         base.overlay(&style_run);
-        self.runs_of(p, &base, &mut para, fns);
+        self.runs_of(p, &base, &mut para, fns, None);
         para
     }
 
     /// w:r 및 이를 감싸는 w:hyperlink/w:smartTag/w:ins 등을 훑는다.
-    fn runs_of(&mut self, parent: Xml, base: &RunFmt, para: &mut Paragraph, fns: &Footnotes) {
+    /// `link`는 감싸고 있는 w:hyperlink에서 내려온다 (런 자신에는 주소가 없다).
+    fn runs_of(
+        &mut self,
+        parent: Xml,
+        base: &RunFmt,
+        para: &mut Paragraph,
+        fns: &Footnotes,
+        link: Option<&str>,
+    ) {
         for node in parent.children().filter(|n| n.is_element()) {
             match node.tag_name().name() {
-                "r" => self.run(node, base, para, fns),
-                "hyperlink" | "smartTag" | "ins" | "sdt" | "sdtContent" | "bookmarkStart" => {
-                    self.runs_of(node, base, para, fns)
+                "r" => self.run(node, base, para, fns, link),
+                "hyperlink" => {
+                    // 외부 주소는 관계로, 문서 내 앵커는 w:anchor로 온다
+                    let target = attr(node, "id")
+                        .and_then(|id| self.ext_rels.get(id))
+                        .cloned()
+                        .or_else(|| attr(node, "anchor").map(|a| format!("#{a}")));
+                    self.runs_of(node, base, para, fns, target.as_deref().or(link));
+                }
+                "smartTag" | "ins" | "sdt" | "sdtContent" | "bookmarkStart" => {
+                    self.runs_of(node, base, para, fns, link)
                 }
                 _ => {}
             }
         }
     }
 
-    fn run(&mut self, r: Xml, base: &RunFmt, para: &mut Paragraph, fns: &Footnotes) {
+    fn run(
+        &mut self,
+        r: Xml,
+        base: &RunFmt,
+        para: &mut Paragraph,
+        fns: &Footnotes,
+        link: Option<&str>,
+    ) {
         let rpr = child(r, "rPr");
         let mut fmt = base.clone();
         // 런 스타일(rStyle) → 직접 지정(rPr) 순으로 덮는다
@@ -327,7 +434,7 @@ impl Ctx<'_, '_> {
             .and_then(|p| child(p, "rStyle"))
             .and_then(|s| attr(s, "val"))
         {
-            let (run_style, _) = self.styles.resolve(Some(id), 0);
+            let (run_style, _, _) = self.styles.resolve(Some(id), 0);
             fmt.overlay(&run_style);
         }
         fmt.overlay(&read_rpr(rpr));
@@ -359,11 +466,15 @@ impl Ctx<'_, '_> {
         }
 
         if !text.is_empty() {
+            // 링크가 다르면 합치면 안 된다 — 합치면 링크 경계가 사라진다
             match para.runs.last_mut() {
-                Some(last) if last.char_shape_id == shape => last.text.push_str(&text),
+                Some(last) if last.char_shape_id == shape && last.link.as_deref() == link => {
+                    last.text.push_str(&text)
+                }
                 _ => para.runs.push(Run {
                     char_shape_id: shape,
                     text,
+                    link: link.map(str::to_string),
                 }),
             }
         }
@@ -381,6 +492,11 @@ impl Ctx<'_, '_> {
         }
         if fmt.underline == Some(true) {
             attr |= 1 << 2;
+        }
+        match fmt.vert_align {
+            Some(1) => attr |= ATTR_SUPER,
+            Some(2) => attr |= ATTR_SUB,
+            _ => {}
         }
         // w:sz는 하프포인트 — 1/100pt로 바꾼다. 미지정은 Word 기본 10pt.
         let base = fmt.half_pt.filter(|v| *v > 0).unwrap_or(20) * 50;

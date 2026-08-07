@@ -357,11 +357,18 @@ struct ChpFmt {
     special: bool,
     /// sprmCPicLocation — Data 스트림 안 그림 위치
     pic_offset: Option<u32>,
+    /// sprmCIss — 0 보통 · 1 위첨자 · 2 아래첨자
+    iss: u8,
 }
 
 #[derive(Clone, Default)]
 struct PapFmt {
     align: u8,
+    /// 들여쓰기 계열 (twip). sprmPDxaLeft1은 음수면 내어쓰기다.
+    dxa_left: i32,
+    dxa_left1: i32,
+    dya_before: i32,
+    dya_after: i32,
     in_table: bool,
     /// 행 종결 문단 (sprmPFTtp) — 여기서 표의 한 행이 끝난다
     ttp: bool,
@@ -528,6 +535,8 @@ fn apply_chp(fmt: &mut ChpFmt, grpprl: &[u8]) {
                 fmt.font = Some(u16::from_le_bytes([s.operand[0], s.operand[1]]))
             }
             0x0855 => fmt.special = one != 0,
+            // sprmCIss: 0 보통 · 1 위첨자 · 2 아래첨자
+            0x2A48 => fmt.iss = one,
             0x6A03 if s.operand.len() >= 4 => {
                 fmt.pic_offset = Some(u32::from_le_bytes([
                     s.operand[0],
@@ -553,6 +562,19 @@ fn apply_pap(fmt: &mut PapFmt, grpprl: &[u8]) {
                     3 => 0,
                     _ => 1,
                 }
+            }
+            // 들여쓰기·문단 간격 (전부 2바이트 twip)
+            0x840F if s.operand.len() >= 2 => {
+                fmt.dxa_left = i16::from_le_bytes([s.operand[0], s.operand[1]]) as i32
+            }
+            0x8411 if s.operand.len() >= 2 => {
+                fmt.dxa_left1 = i16::from_le_bytes([s.operand[0], s.operand[1]]) as i32
+            }
+            0xA413 if s.operand.len() >= 2 => {
+                fmt.dya_before = i16::from_le_bytes([s.operand[0], s.operand[1]]) as i32
+            }
+            0xA414 if s.operand.len() >= 2 => {
+                fmt.dya_after = i16::from_le_bytes([s.operand[0], s.operand[1]]) as i32
             }
             0x2416 => fmt.in_table = one != 0,
             0x2417 => fmt.ttp = one != 0,
@@ -1027,7 +1049,15 @@ impl Builder {
             }
 
             let para = Paragraph {
-                shape_index: self.intern.para_shape(u.pap.align),
+                shape_index: self.intern.para_shape_m(
+                    u.pap.align,
+                    ParaMargins {
+                        indent: u.pap.dxa_left * TWIP,
+                        first_line: u.pap.dxa_left1 * TWIP,
+                        space_before: u.pap.dya_before * TWIP,
+                        space_after: u.pap.dya_after * TWIP,
+                    },
+                ),
                 runs: u.runs,
                 images: u.images,
                 ..Default::default()
@@ -1077,6 +1107,7 @@ impl Builder {
                     runs.push(Run {
                         char_shape_id: id,
                         text,
+                        link: None,
                     });
                 }
             }
@@ -1196,6 +1227,11 @@ impl Builder {
         if c.underline {
             attr |= 1 << 2;
         }
+        match c.iss {
+            1 => attr |= ATTR_SUPER,
+            2 => attr |= ATTR_SUB,
+            _ => {}
+        }
         let font_id = self.intern.font(self.fonts.name(c.font));
         // sprmCHps는 하프포인트 — 1/100pt로 바꾼다. 미지정은 Word 기본 10pt.
         let base = c.half_pt.filter(|v| *v > 0).unwrap_or(20) * 50;
@@ -1295,6 +1331,7 @@ fn push_char(pending: &mut Option<(u32, String)>, ch: char, shape: u32, runs: &m
                     runs.push(Run {
                         char_shape_id: id,
                         text,
+                        link: None,
                     });
                 }
             }

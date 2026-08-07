@@ -12,10 +12,13 @@
     "export": "bun run scripts/export.ts",
     "compare": "bun run scripts/compare.ts",
     "edit-sim": "bun run scripts/edit-sim.ts",
+    "page-sim": "bun run scripts/page-setup-sim.ts",
     "wasm:build": "wasm-pack build rust/hwp-core --target web --release",
     "lint": "oxlint",
     "preview": "vite preview",
-    "matrix": "bun run scripts/matrix.ts"
+    "matrix": "bun run scripts/matrix.ts",
+    "vocab-sim": "bun run scripts/vocab-sim.ts",
+    "shots": "bun run scripts/shots.ts"
   },
   "dependencies": {
     "cfb": "^1.2.2",
@@ -36,6 +39,7 @@
     "happy-dom": "^20.11.1",
     "lightningcss-darwin-arm64": "^1.33.0",
     "oxlint": "^1.75.0",
+    "puppeteer-core": "^25.5.0",
     "react-grab": "^0.1.50",
     "typescript": "~6.0.2",
     "vite": "^8.2.0",

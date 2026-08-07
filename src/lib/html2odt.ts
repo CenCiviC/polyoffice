@@ -10,7 +10,7 @@
 import { zipSync, strToU8 } from 'fflate'
 
 import type { IrBlock, IrCell, IrDoc, IrImage, IrPara, IrRun, IrStyle } from './ir-model'
-import { DEFAULT_LINE_HEIGHT, DOC_FONT, HEADING_SPACE, LINE_BREAK, readIr, xmlSafe } from './ir-model'
+import { DEFAULT_LINE_HEIGHT, DOC_FONT, HEADING_SPACE, LINE_BREAK, LINK_COLOR, readIr, xmlSafe } from './ir-model'
 import type { EmbeddedFont } from './font-embed'
 
 const esc = (s: string) =>
@@ -64,7 +64,10 @@ class OdtWriter {
     }
     // 밑줄·취소선·색은 스크립트와 무관하다
     if (run.color && run.color !== '#000000') p.push(`fo:color="${run.color}"`)
-    if (run.underline) {
+    else if (run.link) p.push(`fo:color="${LINK_COLOR}"`)
+    // 첨자 — ODF는 위치와 크기를 함께 준다. 58%는 LibreOffice·한글이 쓰는 기본 축소율
+    if (run.vertAlign) p.push(`style:text-position="${run.vertAlign === 'super' ? 'super' : 'sub'} 58%"`)
+    if (run.underline || run.link) {
       p.push(
         'style:text-underline-style="solid"',
         'style:text-underline-width="auto"',
@@ -79,17 +82,23 @@ class OdtWriter {
    * fo:line-height의 백분율은 구현마다 "글자 크기 기준"과 "자연 줄높이 기준"으로 갈린다.
    * docx와 같은 이유로 여기서도 pt로 못박는다(style:line-height-at-least = 최소값이라 안 잘림).
    */
-  paraStyle(align: string, maxPt: number, heading: number): string {
+  paraStyle(para: IrPara, maxPt: number): string {
+    const align = para.align
     const fo = align === 'justify' ? 'justify' : align === 'center' ? 'center' : align === 'right' ? 'end' : 'start'
-    const ratio = heading ? HEADING_SPACE.lineHeight : DEFAULT_LINE_HEIGHT
-    const space = heading
-      ? ` fo:margin-top="${pt(HEADING_SPACE.beforePt)}" fo:margin-bottom="${pt(HEADING_SPACE.afterPt)}"`
-      : ''
+    const ratio = para.heading ? HEADING_SPACE.lineHeight : DEFAULT_LINE_HEIGHT
+    // 앞뒤 여백·들여쓰기는 IR이 준 값 그대로 (제목 기본값은 readPara가 채워 준다)
+    const extra: string[] = []
+    if (para.spaceBeforePt) extra.push(`fo:margin-top="${pt(para.spaceBeforePt)}"`)
+    if (para.spaceAfterPt) extra.push(`fo:margin-bottom="${pt(para.spaceAfterPt)}"`)
+    if (para.indentPt) extra.push(`fo:margin-left="${pt(para.indentPt)}"`)
+    // ODF는 내어쓰기도 음수 text-indent 그대로 — docx처럼 부호를 뒤집지 않는다
+    if (para.firstLinePt) extra.push(`fo:text-indent="${pt(para.firstLinePt)}"`)
     return this.intern(
       this.paraStyles,
       'P',
       `fo:text-align="${fo}" style:line-height-at-least="${pt(maxPt * ratio)}"` +
-        ` style:snap-to-layout-grid="false" style:line-break="${LINE_BREAK}"${space}`,
+        ` style:snap-to-layout-grid="false" style:line-break="${LINE_BREAK}"` +
+        (extra.length ? ` ${extra.join(' ')}` : ''),
     )
   }
 
@@ -170,10 +179,27 @@ class OdtWriter {
     return `<text:span text:style-name="${name}">${body}</text:span>`
   }
 
+  /** 링크 단위로 묶어 `text:a`로 감싼다 (같은 링크의 연속 런은 한 덩어리) */
+  private runsXml(runs: IrRun[]): string {
+    const out: string[] = []
+    for (let i = 0; i < runs.length; ) {
+      const link = runs[i].link
+      let j = i
+      while (j < runs.length && runs[j].link === link) j++
+      const inner = runs
+        .slice(i, j)
+        .map((r) => this.runXml(r))
+        .join('')
+      out.push(link ? `<text:a xlink:type="simple" xlink:href="${esc(link)}">${inner}</text:a>` : inner)
+      i = j
+    }
+    return out.join('')
+  }
+
   paraXml(para: IrPara): string {
     const maxPt = para.runs.reduce((m, r) => Math.max(m, r.sizePt), 0) || 10
-    const style = this.paraStyle(para.align, maxPt, para.heading)
-    const runs = para.runs.map((r) => this.runXml(r)).join('')
+    const style = this.paraStyle(para, maxPt)
+    const runs = this.runsXml(para.runs)
     const imgs = para.images
       .map((im) => {
         const href = this.picture(im)

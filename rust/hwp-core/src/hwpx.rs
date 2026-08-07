@@ -200,6 +200,13 @@ fn parse_header(doc: &Document, ids: &mut IdMaps) -> DocInfo {
             Some("TOP") => attr |= 3 << 2,
             _ => {}
         }
+        // 첨자는 charPr의 무속성 자식이다 (실물 hwpx + hwpxlib CharPr로 확인)
+        if child("supscript").is_some() {
+            attr |= ATTR_SUPER;
+        }
+        if child("subscript").is_some() {
+            attr |= ATTR_SUB;
+        }
         info.char_shapes.push(CharShape {
             base_size: cp
                 .attribute("height")
@@ -242,10 +249,59 @@ fn parse_header(doc: &Document, ids: &mut IdMaps) -> DocInfo {
             Some("DISTRIBUTE_SPACE") => 5,
             _ => 0,
         };
-        info.para_shapes.push(ParaShape { align });
+        // 여백은 <hh:margin>의 자식들. 값은 이미 HWPUNIT이라 변환이 없다.
+        //
+        // 주의: paraPr은 <hp:switch><hp:case required-namespace="…HwpUnitChar">…</hp:case>
+        // <hp:default>…</hp:default></hp:switch> 로 **같은 여백을 두 벌** 담고 있고 값이 다르다
+        // (실물에서 intent가 case -8400 / default -16800). SVG의 switch와 같은 규칙이라
+        // 그 네임스페이스(글자 단위)를 구현한 리더만 case를 쓰고, 나머지는 default를 쓴다.
+        // 우리는 글자 단위를 구현하지 않으므로 **case 안에 있는 margin은 건너뛴다.**
+        let margin = pp
+            .descendants()
+            .filter(|n| n.tag_name().name() == "margin")
+            .find(|n| !n.ancestors().any(|a| a.tag_name().name() == "case"))
+            .or_else(|| {
+                pp.descendants()
+                    .find(|n| n.tag_name().name() == "margin")
+            });
+        let margin_of = |name: &str| -> i32 {
+            margin
+                .and_then(|m| m.children().find(|n| n.tag_name().name() == name))
+                .and_then(|n| n.attribute("value"))
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0)
+        };
+        info.para_shapes.push(ParaShape {
+            align,
+            indent: margin_of("left"),
+            first_line: margin_of("intent"),
+            space_before: margin_of("prev"),
+            space_after: margin_of("next"),
+        });
     }
 
     info
+}
+
+/// HYPERLINK 필드에서 주소를 꺼낸다 — **최선노력**.
+///
+/// 타입명은 hwpxlib `FieldType::HYPERLINK`로 확정됐지만
+/// `<hp:stringParam name="Command">`의 문자열 문법(구분자·필드 수)은 확인된 문서가 없다.
+/// 실물 샘플의 CROSSREF가 `대상;6;2;0;0;` 꼴인 것으로 미루어 첫 조각이 대상이라고 보고 자른다.
+///
+/// 틀려도 안전한 이유: 읽기라서 잘못 뽑으면 링크가 안 생길 뿐이고, 방출기가 `isSafeHref`로
+/// 한 번 더 거르므로 이상한 값이 IR에 들어가지 않는다. (쓰기는 파일이 안 열릴 수 있어 강등했다.)
+fn hyperlink_target(field: Node) -> Option<String> {
+    let cmd = field
+        .descendants()
+        .filter(|n| n.tag_name().name() == "stringParam")
+        .find(|n| n.attribute("name") == Some("Command"))
+        .and_then(|n| n.text())?;
+    let first = cmd.split(';').next()?.trim();
+    if first.is_empty() {
+        return None;
+    }
+    Some(first.to_string())
 }
 
 fn hex_rgb(s: &str) -> Option<[u8; 3]> {
@@ -280,6 +336,10 @@ fn parse_paragraph(p: Node, section: &mut Section, ids: &IdMaps) -> Paragraph {
         ..Default::default()
     };
 
+    // 하이퍼링크는 필드다: <hp:ctrl><hp:fieldBegin type="HYPERLINK">가 열고
+    // <hp:fieldEnd/>가 닫으며, 그 사이의 런들이 링크 안쪽이다.
+    let mut link: Option<String> = None;
+
     for run in p.children().filter(|n| n.tag_name().name() == "run") {
         let shape_id = run
             .attribute("charPrIDRef")
@@ -305,7 +365,18 @@ fn parse_paragraph(p: Node, section: &mut Section, ids: &IdMaps) -> Paragraph {
                     }
                 }
                 "secPr" => absorb_sec_pr(child, section),
-                "ctrl" | "linesegarray" => {}
+                "ctrl" => {
+                    for c in child.children().filter(|n| n.is_element()) {
+                        match c.tag_name().name() {
+                            "fieldBegin" if c.attribute("type") == Some("HYPERLINK") => {
+                                link = hyperlink_target(c)
+                            }
+                            "fieldEnd" => link = None,
+                            _ => {}
+                        }
+                    }
+                }
+                "linesegarray" => {}
                 // rect·container 등 그리기 개체: 내부 그림을 건지고,
                 // 글상자(drawText)는 시각적 등가물인 1×1 표로 강등해 본문에 남긴다
                 _ => {
@@ -355,10 +426,15 @@ fn parse_paragraph(p: Node, section: &mut Section, ids: &IdMaps) -> Paragraph {
         if !text.is_empty() {
             // 같은 글자모양이 이어지면 병합 (.hwp digest와 동일한 run 형태 유지)
             match para.runs.last_mut() {
-                Some(last) if last.char_shape_id == shape_id => last.text.push_str(&text),
+                Some(last)
+                    if last.char_shape_id == shape_id && last.link.as_deref() == link.as_deref() =>
+                {
+                    last.text.push_str(&text)
+                }
                 _ => para.runs.push(Run {
                     char_shape_id: shape_id,
                     text,
+                    link: link.clone(),
                 }),
             }
         }

@@ -3,7 +3,8 @@
  * 파서(Rust WASM 또는 hwp.js)가 만든 DocModel(model.ts 계약)을 받아
  * docs/IR-SPEC.md 어휘의 HTML을 생성한다.
  */
-import { IR_VERSION } from './ir'
+import { IR_VERSION, isSafeHref } from './ir'
+import { ATTR } from './model'
 import type { DocModel, ParagraphModel, TableModel } from './model'
 import { parseHwpJs } from './parser-js'
 
@@ -57,6 +58,9 @@ const BASE_CSS = `
   .hwp-page li { min-height: 1em; line-height: 1.6; }
   doc-pagebreak { display: block; border-top: 2px dashed #b6bcc6; margin: 10pt 0; page-break-after: always; }
   @media print { doc-pagebreak { border: none; } }
+  /* 하이퍼링크 — 색은 IR에 없고 여기서 칠한다. 백엔드 셋도 같은 값(LINK_COLOR)으로 칠해야
+     화면과 저장물이 같아진다. 각주 참조(sup a[data-fn-ref])는 아래 규칙이 다시 덮는다. */
+  .hwp-page a[href] { color: #1a4fd6; text-decoration: underline; text-underline-offset: 2px; }
   .hwp-page sup a { color: inherit; text-decoration: none; font-size: 0.75em; }
   doc-section { counter-reset: fn; }
   doc-footnote { display: block; counter-increment: fn; font-size: 0.85em; color: #333;
@@ -114,15 +118,41 @@ class Emitter {
 
   private paragraphHTML(para: ParagraphModel): string {
     this.stats.paragraphs++
-    const align = TEXT_ALIGN[this.model.info.paraShapes[para.shapeIndex]?.align ?? 0]
-    const styleAttr = align && align !== 'justify' ? ` style="text-align:${align}"` : ''
+    const shape = this.model.info.paraShapes[para.shapeIndex]
+    const align = TEXT_ALIGN[shape?.align ?? 0]
+    const styles: string[] = []
+    if (align && align !== 'justify') styles.push(`text-align:${align}`)
+    // hwpunit(1/7200in) → pt. 0은 생략 (기본값 생략 원칙)
+    const pt = (u: number | undefined) => (u ? u / 100 : 0)
+    const indentPt = pt(shape?.indent)
+    /**
+     * 내어쓰기는 **왼쪽 들여쓰기 안에서만** 의미가 있다 — 첫 줄이 본문 왼쪽 경계보다
+     * 더 왼쪽으로 나가면 글자가 여백 밖으로 흘러 조판이 깨진다.
+     *
+     * 실문서에서 실제로 걸린다: 재정경제부 보도자료의 개요 문단들은 `left=0`인데
+     * `intent`가 -168pt까지 간다(번호를 한글 엔진이 따로 붙여 주는 목록 문단이라 그렇다).
+     * 그대로 흘리면 미리보기·docx·odt가 전부 왼쪽으로 삐져나간다.
+     */
+    const firstLinePt = Math.max(pt(shape?.firstLine), -indentPt)
+    if (indentPt) styles.push(`margin-left:${indentPt.toFixed(1)}pt`)
+    if (firstLinePt) styles.push(`text-indent:${firstLinePt.toFixed(1)}pt`)
+    if (pt(shape?.spaceBefore)) styles.push(`margin-top:${pt(shape?.spaceBefore).toFixed(1)}pt`)
+    if (pt(shape?.spaceAfter)) styles.push(`margin-bottom:${pt(shape?.spaceAfter).toFixed(1)}pt`)
+    const styleAttr = styles.length ? ` style="${styles.join(';')}"` : ''
 
     const runs = para.runs
       .filter((r) => r.text.length > 0)
       .map((r) => {
         this.stats.chars += r.text.length
         const style = this.charRunStyle(r.charShapeId)
-        return `<span${style ? ` style="${style}"` : ''}>${esc(r.text).replace(/\n/g, '<br>')}</span>`
+        let html = `<span${style ? ` style="${style}"` : ''}>${esc(r.text).replace(/\n/g, '<br>')}</span>`
+        // 첨자는 스타일이 아니라 요소다 (IR 어휘)
+        const attr = this.model.info.charShapes[r.charShapeId]?.attr ?? 0
+        if (attr & ATTR.super) html = `<sup>${html}</sup>`
+        else if (attr & ATTR.sub) html = `<sub>${html}</sub>`
+        // 문서에서 온 링크도 계약을 지켜야 한다 — 못 미더운 스킴은 통째로 버린다
+        if (r.link && isSafeHref(r.link)) html = `<a href="${esc(r.link)}">${html}</a>`
+        return html
       })
 
     const images = (para.images ?? []).map((img) => this.imageHTML(img)).join('')

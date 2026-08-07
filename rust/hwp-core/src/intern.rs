@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use base64::Engine as _;
 
-use crate::model::{BinData, BorderFill, CharShape, DocInfo, ParaShape};
+use crate::model::{BinData, BorderFill, CharShape, DocInfo, ParaMargins, ParaShape};
 
 /// 글꼴 미지정. fontFaces 범위 밖이라 방출기가 font-family를 넣지 않는다.
 pub const NO_FONT: u16 = u16::MAX;
@@ -18,7 +18,7 @@ pub struct Interner {
     pub info: DocInfo,
     fonts: HashMap<String, u16>,
     shapes: HashMap<(i32, [u8; 3], u32, u16), u32>,
-    paras: HashMap<u8, u16>,
+    paras: HashMap<(u8, ParaMargins), u16>,
     fills: HashMap<[u8; 3], u16>,
     bins: HashMap<String, u16>,
 }
@@ -58,13 +58,25 @@ impl Interner {
         id
     }
 
+    /// 정렬만 다른 문단이 대부분이라 여백 없는 호출을 짧게 쓴다.
     pub fn para_shape(&mut self, align: u8) -> u16 {
-        if let Some(&id) = self.paras.get(&align) {
+        self.para_shape_m(align, ParaMargins::default())
+    }
+
+    pub fn para_shape_m(&mut self, align: u8, m: ParaMargins) -> u16 {
+        let key = (align, m);
+        if let Some(&id) = self.paras.get(&key) {
             return id;
         }
         let id = self.info.para_shapes.len() as u16;
-        self.info.para_shapes.push(ParaShape { align });
-        self.paras.insert(align, id);
+        self.info.para_shapes.push(ParaShape {
+            align,
+            indent: m.indent,
+            first_line: m.first_line,
+            space_before: m.space_before,
+            space_after: m.space_after,
+        });
+        self.paras.insert(key, id);
         id
     }
 

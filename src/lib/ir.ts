@@ -3,7 +3,19 @@
  * 스펙 변경 없는 이 파일의 변경 금지, 그 역도 금지.
  */
 
-export const IR_VERSION = '0.1.0'
+export const IR_VERSION = '0.2.0'
+
+/**
+ * `a[href]`가 가리켜도 되는 곳 — 외부 링크 셋과 문서 내 블록 앵커.
+ * `javascript:`·`data:`를 막는 게 목적이다. 편집기는 붙여넣기로 임의 HTML을 받고,
+ * 그 결과가 standalone HTML로 저장돼 브라우저에서 열린다.
+ */
+const SAFE_HREF = /^(https?:|mailto:)|^#b\d+$/i
+
+/** 편집기가 링크를 만들기 전에 쓰는 것과 린터가 검사하는 것이 **같은 규칙**이어야 한다 */
+export function isSafeHref(href: string): boolean {
+  return SAFE_HREF.test(href)
+}
 
 /** 요소별 허용 속성. data-id / style은 공통 허용이라 목록에서 제외. */
 const ELEMENT_ATTRS: Record<string, Set<string>> = {
@@ -32,7 +44,8 @@ const ELEMENT_ATTRS: Record<string, Set<string>> = {
   BR: new Set([]),
   IMG: new Set(['src', 'alt']),
   SUP: new Set([]),
-  A: new Set(['data-fn-ref']),
+  SUB: new Set([]),
+  A: new Set(['data-fn-ref', 'href']),
 }
 
 const STYLE_PROPS = new Set([
@@ -50,6 +63,11 @@ const STYLE_PROPS = new Set([
   'padding',
   'background',
   'float',
+  // 문단 여백 — p·h1~h6·li에만. text-indent가 음수면 내어쓰기.
+  'margin-left',
+  'text-indent',
+  'margin-top',
+  'margin-bottom',
 ])
 
 /** data-id가 필수인 콘텐츠 블록 */
@@ -100,6 +118,21 @@ export function normalizeIR(root: Element): void {
     if (styles.length) span.setAttribute('style', styles.join(';'))
     while (el.firstChild) span.appendChild(el.firstChild)
     el.replaceWith(span)
+  }
+
+  // 편집기·붙여넣기가 들여오는 링크 세탁: 계약 밖 속성(target·rel·title…)을 떼고,
+  // 허용되지 않은 스킴이면 링크 자체를 벗겨 텍스트만 남긴다.
+  // 여기서 안 걸러도 validateIR이 잡지만, 저장물이 브라우저에서 열리는 이상 방어선을 앞에 둔다.
+  for (const a of Array.from(root.querySelectorAll('a'))) {
+    for (const attr of Array.from(a.attributes)) {
+      if (attr.name !== 'href' && attr.name !== 'data-fn-ref' && attr.name !== 'data-id' && attr.name !== 'style')
+        a.removeAttribute(attr.name)
+    }
+    const href = a.getAttribute('href')
+    if (href !== null && !SAFE_HREF.test(href)) {
+      if (a.hasAttribute('data-fn-ref')) a.removeAttribute('href')
+      else a.replaceWith(...Array.from(a.childNodes))
+    }
   }
 
   for (const el of Array.from(root.querySelectorAll('*'))) {
@@ -224,10 +257,17 @@ export function validateIR(root: Element): Violation[] {
     if ((tag === 'DOC-HEADER' || tag === 'DOC-FOOTER') && parentTag !== 'DOC-SECTION')
       violations.push({ rule: 'structure', message: `<${tag.toLowerCase()}>는 <doc-section> 직계여야 함`, path })
 
-    // 6. footnote-pair 수집
+    // 6. footnote-pair 수집 + 8. link-target
     if (tag === 'A') {
       const ref = el.getAttribute('data-fn-ref')
       if (ref) fnRefs.push(ref)
+      const href = el.getAttribute('href')
+      if (href !== null) {
+        if (ref)
+          violations.push({ rule: 'link-target', message: 'href와 data-fn-ref 동시 지정 금지', path })
+        if (!SAFE_HREF.test(href))
+          violations.push({ rule: 'link-target', message: `허용되지 않은 링크 대상: ${href}`, path })
+      }
     }
     if (tag === 'DOC-FOOTNOTE') {
       const id = el.getAttribute('id')

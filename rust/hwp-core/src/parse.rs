@@ -200,10 +200,22 @@ fn visit_doc_info(
                 info.border_fills.push(BorderFill { background_color });
             }
             TAG_PARA_SHAPE => {
+                // HWP5 PARA_SHAPE: 속성1(u32) · 왼쪽여백 · 오른쪽여백 · 들여쓰기 ·
+                // 문단간격 위 · 문단간격 아래 (전부 i32 HWPUNIT). 들여쓰기는 음수면 내어쓰기.
+                // 구버전은 뒤쪽이 잘려 있을 수 있어 없으면 0으로 둔다.
                 let mut r = ByteReader::new(&rec.data);
                 let attr = r.u32()?;
+                let indent = r.i32().unwrap_or(0);
+                let _right = r.i32().unwrap_or(0);
+                let first_line = r.i32().unwrap_or(0);
+                let space_before = r.i32().unwrap_or(0);
+                let space_after = r.i32().unwrap_or(0);
                 info.para_shapes.push(ParaShape {
                     align: bits(attr, 2, 4) as u8,
+                    indent,
+                    first_line,
+                    space_before,
+                    space_after,
                 });
             }
             _ => {}
@@ -563,6 +575,7 @@ fn digest(raw: RawParagraph) -> Paragraph {
             _ => runs.push(Run {
                 char_shape_id: shape,
                 text: piece,
+                link: None,
             }),
         }
     }

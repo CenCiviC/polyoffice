@@ -4,8 +4,19 @@ import { html2hwpx } from './lib/html2hwpx'
 import { html2docx } from './lib/html2docx'
 import { html2odt } from './lib/html2odt'
 import { detectFonts, FONT_CANDIDATES, isSafeForExport } from './lib/fonts'
-import { normalizeIR } from './lib/ir'
+import { isSafeHref, normalizeIR } from './lib/ir'
+import { mountTableUI, stripUi, TABLE_UI_CSS } from './lib/table-ui'
 import { paginateKeepingCaret, unpaginate } from './lib/paginate'
+import {
+  DEFAULT_GEOM,
+  PAPERS,
+  fromPaper,
+  paperLabel,
+  readGeom,
+  writeGeom,
+  type PageGeom,
+  type PaperKey,
+} from './lib/page-setup'
 import { initHwpWasm, parseHwpWasm } from './lib/parser-wasm'
 import wasmUrl from '../rust/hwp-core/pkg/hwp_core_bg.wasm?url'
 
@@ -116,9 +127,119 @@ const Icon = {
       <rect x="8.5" y="3.5" width="6" height="9" rx="1" />
     </svg>
   ),
+  pageSetup: (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round">
+      <rect x="3.5" y="1.5" width="9" height="13" rx="1" />
+      <path d="M5.5 4.5h5M5.5 7h5M5.5 9.5h3" />
+    </svg>
+  ),
+  outline: (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
+      <path d="M2.5 4h11M5 8h8.5M5 12h6" />
+    </svg>
+  ),
+  clearFormat: (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
+      <path d="M6 3h7M9.5 3 7 13" />
+      <path d="M2.5 13.5 13 3" stroke="currentColor" strokeWidth="1.2" />
+    </svg>
+  ),
+  link: (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
+      <path d="M6.5 9a3 3 0 0 0 4.5.3l2-2a3 3 0 0 0-4.2-4.2l-1 1" />
+      <path d="M9.5 7a3 3 0 0 0-4.5-.3l-2 2a3 3 0 0 0 4.2 4.2l1-1" />
+    </svg>
+  ),
+  indent: (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
+      <path d="M2.5 3.5h11M7 6.5h6.5M7 9.5h6.5M2.5 12.5h11" />
+      <path d="m2.5 6.5 2 1.5-2 1.5z" fill="currentColor" />
+    </svg>
+  ),
+  outdent: (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
+      <path d="M2.5 3.5h11M7 6.5h6.5M7 9.5h6.5M2.5 12.5h11" />
+      <path d="m4.5 6.5-2 1.5 2 1.5z" fill="currentColor" />
+    </svg>
+  ),
+}
+
+/**
+ * 스크림 위에 뜨는 다이얼로그 — 앱의 공유 계층.
+ * 페이지 설정이 첫 소비자이고, 표 서식·목록 옵션·링크 편집이 이어서 쓴다.
+ * Esc/스크림 클릭으로 닫히고, 열릴 때 첫 컨트롤로 포커스를 옮긴다.
+ */
+function Dialog({
+  title,
+  onClose,
+  children,
+  footer,
+}: {
+  title: string
+  onClose: () => void
+  children: React.ReactNode
+  footer: React.ReactNode
+}) {
+  const boxRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', onKey)
+    boxRef.current?.querySelector<HTMLElement>('button, input, select')?.focus()
+    return () => document.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  return (
+    <div
+      className="scrim"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose()
+      }}
+    >
+      <div className="dialog" ref={boxRef} role="dialog" aria-modal="true" aria-label={title}>
+        <div className="dialog-head">{title}</div>
+        <div className="dialog-body">{children}</div>
+        <div className="dialog-foot">{footer}</div>
+      </div>
+    </div>
+  )
+}
+
+/** 분절 선택 컨트롤 — 상태는 색 + 외곽선 이중 인코딩 */
+function Seg<T extends string | number | boolean>({
+  value,
+  options,
+  onChange,
+}: {
+  value: T
+  options: { v: T; label: string }[]
+  onChange: (v: T) => void
+}) {
+  return (
+    <div className="seg">
+      {options.map((o) => (
+        <button
+          key={String(o.v)}
+          type="button"
+          className={o.v === value ? 'on' : ''}
+          onClick={() => onChange(o.v)}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  )
 }
 
 const clampZoom = (z: number) => Math.min(200, Math.max(50, z))
+
+/** 들여쓰기 한 수준(pt) — 두 글자. 한글 공문서 관행에 맞춘 값이다 */
+const INDENT_STEP_PT = 20
+
+const escapeText = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+const escapeAttr = (s: string) => escapeText(s).replace(/"/g, '&quot;')
 
 // 두 페이지 보기 배율 계산용 — 편집기 body.two-up의 gap/padding과 값을 맞춘다
 const TWO_UP_GAP = 20
@@ -168,6 +289,18 @@ function sanitizePastedHtml(html: string): string {
       const el = child as Element
       if (el.tagName === 'STYLE' || el.tagName === 'SCRIPT' || el.tagName === 'META') continue
       const style = [inherited, inlineStyle(el)].filter(Boolean).join(';')
+      // 링크는 살린다 — 붙여넣기가 IR 어휘 안에서 보존할 수 있는 유일한 "관계"다.
+      // 안전하지 않은 스킴이면 감싸지 않고 안쪽 글자만 남긴다(normalizeIR과 같은 처리).
+      if (el.tagName === 'A') {
+        const href = (el.getAttribute('href') ?? '').trim()
+        const start = out.length
+        walk(el, style)
+        if (isSafeHref(href) && out.length > start) {
+          const inner = out.splice(start).join('')
+          out.push(`<a href="${escText(href)}">${inner}</a>`)
+        }
+        continue
+      }
       const blockBoundary = BLOCK.has(el.tagName)
       walk(el, style)
       if (blockBoundary && out.length && out[out.length - 1] !== '<br>') out.push('<br>')
@@ -187,10 +320,20 @@ export default function App() {
   const [copied, setCopied] = useState(false)
   const [edited, setEdited] = useState(false)
   const [previewKey, setPreviewKey] = useState(0)
-  const [fmt, setFmt] = useState({ bold: false, italic: false, underline: false, strike: false })
+  const [fmt, setFmt] = useState({ bold: false, italic: false, underline: false, strike: false, sup: false, sub: false })
+  /** 캐럿이 표 안에 있나 — 표 조작 버튼을 그때만 보여 준다 */
+  const [inTable, setInTable] = useState(false)
+  const [linkOpen, setLinkOpen] = useState(false)
+  const [linkInit, setLinkInit] = useState({ text: '', href: '' })
+  /** 다이얼로그가 뜨면 iframe의 선택이 풀린다 — 열 때 잡아 두고 적용할 때 되살린다 */
+  const linkRangeRef = useRef<Range | null>(null)
   const [zoom, setZoom] = useState(100)
   const [viewMode, setViewMode] = useState<ViewMode>('single')
-  const [counts, setCounts] = useState({ pages: 0, chars: 0, charsNoSpace: 0 })
+  const [counts, setCounts] = useState({ pages: 0, chars: 0, charsNoSpace: 0, words: 0 })
+  const [outlineOpen, setOutlineOpen] = useState(false)
+  const [outline, setOutline] = useState<{ id: string; text: string; level: number }[]>([])
+  const [pageOpen, setPageOpen] = useState(false)
+  const [geom, setGeom] = useState<PageGeom>(DEFAULT_GEOM)
   const [page, setPage] = useState(1) // 지금 보고 있는 페이지 (1-based)
   const [pageHint, setPageHint] = useState(false) // 스크롤 중 잠깐 뜨는 페이지 표시
   const [findOpen, setFindOpen] = useState(false)
@@ -330,7 +473,26 @@ export default function App() {
       pages: doc.querySelectorAll('doc-section').length,
       chars: text.replace(/\n/g, '').length,
       charsNoSpace: text.replace(/\s/g, '').length,
+      words: text.split(/\s+/).filter(Boolean).length,
     })
+    // 개요는 제목 블록에서 파생한다. 가져온 문서에는 h1~h6이 없다 —
+    // 리더가 아직 개요 수준을 읽지 않아서, 지금은 편집기에서 제목 스타일을 준 것만 잡힌다.
+    setOutline(
+      Array.from(doc.querySelectorAll('h1, h2, h3, h4, h5, h6'))
+        .map((h) => ({
+          id: h.getAttribute('data-id') ?? '',
+          text: (h.textContent ?? '').trim(),
+          level: Number(h.tagName[1]),
+        }))
+        .filter((h) => h.id && h.text),
+    )
+    setGeom(readGeom(doc.querySelector('doc-section')))
+  }, [])
+
+  /** 개요 항목 클릭 → 그 블록으로 스크롤 (문서는 iframe 안이라 id로 다시 찾는다) */
+  const gotoBlock = useCallback((id: string) => {
+    const doc = editorDoc()
+    doc?.querySelector(`[data-id="${CSS.escape(id)}"]`)?.scrollIntoView({ block: 'center', behavior: 'smooth' })
   }, [])
 
   /** 용지 높이에 맞춰 페이지를 다시 나눈다 (페이지 수는 그 결과에서 나온다) */
@@ -477,11 +639,52 @@ export default function App() {
     clearFind()
   }, [clearFind])
 
+  // ── 들여쓰기 · 링크 열기 ───────────────────────────────────
+  // (editorDoc의 키보드 핸들러가 참조하므로 enableEditing보다 앞에 둔다)
+
+  /**
+   * 들여쓰기 한 수준 = 20pt(두 글자). 구글 문서의 36pt(0.5인치)는 한글 관행과 맞지 않는다.
+   * (줄간격과 마찬가지로 블록 style을 직접 고치므로 이 조작은 ⌘Z 기록에 남지 않는다.)
+   */
+  const applyIndent = useCallback((delta: number) => {
+    const block = selectionBlock()
+    if (!block) return
+    const cur = parseFloat(block.style.marginLeft) || 0
+    const next = Math.max(0, cur + delta * INDENT_STEP_PT)
+    if (next > 0) block.style.marginLeft = `${next.toFixed(1)}pt`
+    else block.style.removeProperty('margin-left')
+    setEdited(true)
+  }, [])
+
+  const openLink = useCallback(() => {
+    const doc = editorDoc()
+    const sel = doc?.getSelection()
+    if (!doc || !sel?.rangeCount) return
+    // 다이얼로그로 포커스가 옮겨가면 iframe의 선택이 풀리므로 지금 잡아 둔다
+    linkRangeRef.current = sel.getRangeAt(0).cloneRange()
+    const node = sel.anchorNode
+    const el = node?.nodeType === 1 ? (node as Element) : node?.parentElement
+    setLinkInit({ text: sel.toString(), href: el?.closest('a[href]')?.getAttribute('href') ?? '' })
+    setLinkOpen(true)
+  }, [])
+
   // ── 편집 활성화 ────────────────────────────────────────────
+  /**
+   * 문서 전체를 하나의 편집 영역으로 둔다 (워드·한글과 같은 방식).
+   *
+   * 예전에는 문단마다 contenteditable을 걸었는데, 그러면 편집 단위가 블록 안에 갇힌다:
+   * ⌘A가 문단 하나만 잡고, 선택이 문단 경계를 못 넘고, 실행취소 기록도 블록별로 쪼개져
+   * 글자 수정 말고는 되돌아가지 않는다. designMode는 문서 하나가 편집 영역이라
+   * 선택·실행취소가 문서 전체에 걸린다.
+   */
   const makeEditable = useCallback((doc: Document) => {
-    for (const p of Array.from(doc.querySelectorAll('p, h1, h2, h3, h4, h5, h6, li'))) {
-      p.setAttribute('contenteditable', 'true')
-      p.setAttribute('spellcheck', 'false')
+    if (doc.designMode !== 'on') doc.designMode = 'on'
+    doc.body.setAttribute('spellcheck', 'false')
+    // Enter가 div가 아니라 p를 만들게 한다 (IR 어휘와 맞춘다)
+    try {
+      doc.execCommand('defaultParagraphSeparator', false, 'p')
+    } catch {
+      /* 지원 안 하는 브라우저는 normalizeIR이 div→p로 정리한다 */
     }
   }, [])
 
@@ -492,12 +695,16 @@ export default function App() {
     doc.execCommand('styleWithCSS', false, 'true')
     const style = doc.createElement('style')
     style.textContent = `
-      [contenteditable]:hover { outline: 1px dashed rgba(94, 106, 210, .4); outline-offset: 1px; }
-      [contenteditable]:focus { outline: 2px solid rgba(94, 106, 210, .65); outline-offset: 1px; }
+      /* 편집 중인 쪽만 은은하게 표시 — 블록별 외곽선은 노션처럼 보여서 걷어냈다 */
+      doc-section.hwp-page:focus-within { box-shadow: 0 0 0 1px rgba(94, 106, 210, .35), 0 1px 3px 1px rgba(60,64,67,.15); }
+      body { caret-color: rgb(94, 106, 210); }
+      /* 페이지 아래 여백을 눌러도 본문 끝에 커서가 가도록 */
+      doc-section.hwp-page { cursor: text; }
       /* 정확히 2열 — flex-wrap이면 폭이 모자랄 때 조용히 1열로 되돌아간다 (배율은 fitTwoUpZoom이 맞춘다) */
       body.two-up { display: grid; grid-template-columns: repeat(2, max-content);
         justify-content: center; align-items: start; gap: 20px; padding: 20px 12px; }
       body.two-up doc-section.hwp-page { margin: 0 !important; }
+      ${TABLE_UI_CSS}
       ::highlight(hwp-find) { background: #ffe58a; color: #1a1a1a; }
       ::highlight(hwp-find-current) { background: #f0a020; color: #101010; }
     `
@@ -523,13 +730,30 @@ export default function App() {
       const text = clip?.getData('text/plain') ?? ''
       if (text) doc.execCommand('insertText', false, text)
     })
+    /**
+     * 표 조작 버튼을 언제 보일지.
+     *
+     * 캐럿이 셀 안에 있는 경우만 보면 안 된다 — 표를 클릭하면 `table-ui`가 **표 개체를 선택**하고
+     * (`data-ui-selected`) 캐럿은 셀에 안 들어간다. 그 상태에서도 사용자는 행·열을 만지려 한다.
+     */
+    const syncTableCtx = () => {
+      const n = doc.getSelection()?.anchorNode
+      const el = n?.nodeType === 1 ? (n as Element) : n?.parentElement
+      setInTable(!!el?.closest('td') || !!doc.querySelector('table[data-ui-selected]'))
+    }
+    // table-ui가 캡처 단계에서 선택 표시를 붙이므로 한 틱 뒤에 읽는다
+    doc.addEventListener('click', () => setTimeout(syncTableCtx, 0))
+
     doc.addEventListener('selectionchange', () => {
       setFmt({
         bold: doc.queryCommandState('bold'),
         italic: doc.queryCommandState('italic'),
         underline: doc.queryCommandState('underline'),
         strike: doc.queryCommandState('strikeThrough'),
+        sup: doc.queryCommandState('superscript'),
+        sub: doc.queryCommandState('subscript'),
       })
+      syncTableCtx()
     })
     doc.addEventListener('keydown', (e) => {
       if (!(e.metaKey || e.ctrlKey)) return
@@ -545,11 +769,52 @@ export default function App() {
       } else if (e.key.toLowerCase() === 'f') {
         e.preventDefault()
         openFind()
+      } else if (e.key.toLowerCase() === 'k') {
+        e.preventDefault()
+        openLink()
+      } else if (e.key === ']') {
+        e.preventDefault()
+        applyIndent(1)
+      } else if (e.key === '[') {
+        e.preventDefault()
+        applyIndent(-1)
       }
+    })
+    // 표 클릭 시 워드식 핸들 · 열/행 경계 끌어 크기 조정
+    mountTableUI(doc, {
+      commit: (table, originalHtml, nextHtml) => {
+        const parent = table.parentElement
+        if (!parent) return
+        const idx = Array.from(parent.children).indexOf(table)
+        // 원래 표로 되돌린 뒤 브라우저 편집으로 새 표를 넣어야 ⌘Z가 먹는다
+        table.outerHTML = originalHtml
+        const restored = parent.children[idx]
+        const sel = doc.getSelection()
+        const r = doc.createRange()
+        r.selectNode(restored)
+        sel?.removeAllRanges()
+        sel?.addRange(r)
+        doc.execCommand('insertHTML', false, nextHtml)
+        setEdited(true)
+        recount()
+      },
+      replaceRange: (blocks, nextHtml) => {
+        if (!blocks.length) return
+        const sel = doc.getSelection()
+        const r = doc.createRange()
+        r.setStartBefore(blocks[0])
+        r.setEndAfter(blocks[blocks.length - 1])
+        sel?.removeAllRanges()
+        sel?.addRange(r)
+        doc.execCommand('insertHTML', false, nextHtml)
+        setEdited(true)
+        recount()
+      },
+      changed: () => setEdited(true),
     })
     repaginate() // 문서를 열자마자 용지 높이대로 나눈다
     applyView()
-  }, [makeEditable, applyView, repaginate, recount, openFind, trackPage])
+  }, [makeEditable, applyView, repaginate, recount, openFind, openLink, applyIndent, trackPage])
 
   // ── 서식 명령 ──────────────────────────────────────────────
   const exec = useCallback(
@@ -608,6 +873,45 @@ export default function App() {
       setEdited(true)
     },
     [makeEditable],
+  )
+
+  /**
+   * 위/아래첨자. `styleWithCSS`를 끄고 실행해야 `<sup>`/`<sub>` 태그가 나온다 —
+   * 켜 두면 브라우저가 `vertical-align` 인라인 스타일을 만드는데, 그건 IR 스타일 어휘에 없어서
+   * 저장 직전 린터에 걸린다.
+   */
+  const applyVertAlign = useCallback((cmd: 'superscript' | 'subscript') => {
+    const doc = editorDoc()
+    if (!doc) return
+    doc.execCommand('styleWithCSS', false, 'false')
+    doc.execCommand(cmd)
+    doc.execCommand('styleWithCSS', false, 'true')
+    setEdited(true)
+  }, [])
+
+  /** href가 빈 문자열이면 링크 해제 */
+  const applyLink = useCallback(
+    (href: string) => {
+      const doc = editorDoc()
+      const range = linkRangeRef.current
+      setLinkOpen(false)
+      if (!doc || !range) return
+      const sel = doc.getSelection()
+      sel?.removeAllRanges()
+      sel?.addRange(range)
+      if (!href) {
+        exec('unlink')
+        return
+      }
+      if (range.collapsed) {
+        // 선택이 없으면 주소를 글자로도 넣는다 (빈 링크는 만들 수 없다)
+        doc.execCommand('insertHTML', false, `<a href="${escapeAttr(href)}">${escapeText(href)}</a>`)
+        setEdited(true)
+      } else {
+        exec('createLink', href)
+      }
+    },
+    [exec],
   )
 
   /** 줄간격: 선택 블록에 line-height 적용 */
@@ -683,6 +987,21 @@ export default function App() {
     setEdited(true)
   }, [])
 
+  // ── 페이지 설정 ────────────────────────────────────────────
+  /** 용지·방향·여백을 문서에 반영하고 다시 나눈다 (용지가 바뀌면 페이지 수가 바뀐다) */
+  const applyPageSetup = useCallback(
+    (next: PageGeom) => {
+      const doc = editorDoc()
+      if (!doc) return
+      writeGeom(Array.from(doc.querySelectorAll('doc-section')) as HTMLElement[], next)
+      setGeom(next)
+      setPageOpen(false)
+      setEdited(true)
+      repaginate()
+    },
+    [repaginate],
+  )
+
   // ── 표 편집 ────────────────────────────────────────────────
   const selectionCell = (): HTMLTableCellElement | null => {
     const doc = editorDoc()
@@ -725,11 +1044,34 @@ export default function App() {
   const tableOp = useCallback(
     (op: 'row-add' | 'row-del' | 'col-add' | 'col-del' | 'merge-right' | 'merge-down' | 'unmerge') => {
       const doc = editorDoc()
-      const td = selectionCell()
-      const tr = td?.parentElement as HTMLTableRowElement | null
-      const table = td?.closest('table')
-      if (!doc || !td || !tr || !table) return
+      const liveTd = selectionCell()
+      const liveTable = liveTd?.closest('table')
+      if (!doc || !liveTd || !liveTable) return
+
+      // 표를 직접 고치면 브라우저 실행취소 기록에 안 남아 ⌘Z로 되돌릴 수 없다.
+      // 사본에서 고친 뒤 execCommand('insertHTML')로 통째로 갈아끼우면
+      // 글자 편집과 같은 하나의 기록에 쌓여 ⌘Z가 정상 동작한다.
+      const liveTr = liveTd.parentElement as HTMLTableRowElement
+      const rowIdx = Array.from(liveTable.querySelectorAll('tr')).filter((r) => r.closest('table') === liveTable).indexOf(liveTr)
+      const cellIdx = Array.from(liveTr.cells).indexOf(liveTd)
+      const table = liveTable.cloneNode(true) as HTMLTableElement
       const rows = Array.from(table.querySelectorAll('tr')).filter((r) => r.closest('table') === table)
+      const tr = rows[rowIdx]
+      const td = tr?.cells[cellIdx]
+      if (!tr || !td) return
+
+      /** 사본을 원본 자리에 끼워 넣는다 (실행취소 기록 한 칸) */
+      const commit = () => {
+        const sel = doc.getSelection()
+        const range = doc.createRange()
+        range.selectNode(liveTable)
+        sel?.removeAllRanges()
+        sel?.addRange(range)
+        doc.execCommand('insertHTML', false, table.outerHTML)
+        makeEditable(doc)
+        setEdited(true)
+        recount()
+      }
 
       if (op === 'merge-right' || op === 'merge-down' || op === 'unmerge') {
         const { rows: gridRows, grid, colStart } = buildGrid(table as HTMLTableElement)
@@ -783,9 +1125,7 @@ export default function App() {
           if (cs > 1) fillRow(gridRows[r0], c0, cs - 1)
           for (let rr = r0 + 1; rr < r0 + rs && rr < gridRows.length; rr++) fillRow(gridRows[rr], c0 - 1, cs)
         }
-        makeEditable(doc)
-        setEdited(true)
-        recount()
+        commit()
         return
       }
 
@@ -807,9 +1147,7 @@ export default function App() {
           for (const row of rows) row.cells[Math.min(idx, row.cells.length - 1)]?.remove()
         }
       }
-      makeEditable(doc)
-      setEdited(true)
-      recount()
+      commit()
     },
     [makeEditable, recount],
   )
@@ -850,6 +1188,7 @@ export default function App() {
     const clone = doc.body.cloneNode(true) as HTMLElement
     clone.classList.remove('two-up')
     clone.style.removeProperty('zoom')
+    stripUi(clone) // 표 핸들 등 편집 보조 요소는 문서가 아니다
     unpaginate(clone) // 미리보기용으로 나눈 페이지는 원래 섹션으로 되돌린 뒤 내보낸다
     normalizeIR(clone)
     return clone.innerHTML
@@ -994,6 +1333,9 @@ export default function App() {
               >
                 {copied ? Icon.check : Icon.copy}
               </button>
+              <button className="icon-btn" title="페이지 설정 (용지 · 방향 · 여백)" onClick={() => setPageOpen(true)}>
+                {Icon.pageSetup}
+              </button>
               <button className="icon-btn" title="인쇄 · PDF 저장" onClick={printDoc}>
                 {Icon.print}
               </button>
@@ -1110,6 +1452,29 @@ export default function App() {
             >
               <s>가</s>
             </button>
+            <button
+              title="위첨자 (⌘.)"
+              className={fmt.sup ? 'on' : ''}
+              onMouseDown={keepSelection}
+              onClick={() => applyVertAlign('superscript')}
+            >
+              x²
+            </button>
+            <button
+              title="아래첨자 (⌘,)"
+              className={fmt.sub ? 'on' : ''}
+              onMouseDown={keepSelection}
+              onClick={() => applyVertAlign('subscript')}
+            >
+              x₂
+            </button>
+            <button
+              title="서식 지우기"
+              onMouseDown={keepSelection}
+              onClick={() => exec('removeFormat')}
+            >
+              {Icon.clearFormat}
+            </button>
             <label className="colorwell" title="글자 색">
               <span>A</span>
               <input type="color" onMouseDown={keepSelection} onChange={(e) => exec('foreColor', e.target.value)} />
@@ -1137,6 +1502,12 @@ export default function App() {
             <button title="양쪽 정렬" onMouseDown={keepSelection} onClick={() => exec('justifyFull')}>
               {Icon.alignJustify}
             </button>
+            <button title="들여쓰기 줄이기 (⌘[)" onMouseDown={keepSelection} onClick={() => applyIndent(-1)}>
+              {Icon.outdent}
+            </button>
+            <button title="들여쓰기 늘리기 (⌘])" onMouseDown={keepSelection} onClick={() => applyIndent(1)}>
+              {Icon.indent}
+            </button>
           </div>
           <div className="group">
             <button title="글머리 목록" onMouseDown={keepSelection} onClick={() => listOp('ul')}>
@@ -1161,6 +1532,9 @@ export default function App() {
               <option value="1.5">1.5</option>
               <option value="2.0">2.0</option>
             </select>
+            <button title="링크 (⌘K)" onMouseDown={keepSelection} onClick={openLink}>
+              {Icon.link}
+            </button>
             <button title="이미지 삽입" onMouseDown={keepSelection} onClick={() => imageInputRef.current?.click()}>
               🖼
             </button>
@@ -1183,6 +1557,10 @@ export default function App() {
             <button title="표 삽입" onMouseDown={keepSelection} onClick={insertTable}>
               {Icon.table}
             </button>
+            {/* 행·열·병합은 표 밖에서는 아무 일도 안 하면서 툴바만 두 줄로 접히게 만든다 —
+                캐럿이 표 안일 때만 내보낸다 */}
+            {inTable && (
+              <>
             <button title="아래에 행 추가" onMouseDown={keepSelection} onClick={() => tableOp('row-add')}>
               행+
             </button>
@@ -1204,8 +1582,17 @@ export default function App() {
             <button title="병합 해제" onMouseDown={keepSelection} onClick={() => tableOp('unmerge')}>
               해제
             </button>
+              </>
+            )}
           </div>
           <div className="group">
+            <button
+              title="개요 보기"
+              className={outlineOpen ? 'on' : ''}
+              onClick={() => setOutlineOpen((v) => !v)}
+            >
+              {Icon.outline}
+            </button>
             <button title="찾기/바꾸기 (⌘F)" className={findOpen ? 'on' : ''} onClick={() => (findOpen ? closeFind() : openFind())}>
               {Icon.search}
             </button>
@@ -1275,6 +1662,28 @@ export default function App() {
         onDragLeave={() => setDragging(false)}
         onDrop={onDrop}
       >
+        {result && tab === 'preview' && outlineOpen && (
+          <nav className="outline" aria-label="개요">
+            <div className="outline-head">개요</div>
+            {outline.length ? (
+              outline.map((h) => (
+                <button
+                  key={h.id}
+                  className={`outline-item lv${h.level}`}
+                  title={h.text}
+                  onClick={() => gotoBlock(h.id)}
+                >
+                  {h.text}
+                </button>
+              ))
+            ) : (
+              <p className="outline-empty">
+                제목 스타일을 적용한 문단이 여기에 표시됩니다.
+              </p>
+            )}
+          </nav>
+        )}
+
         {!result ? (
           <div className="empty" onClick={() => inputRef.current?.click()} role="button" tabIndex={0}>
             <img src="/icons/narro-logo-180.png" alt="" />
@@ -1315,6 +1724,10 @@ export default function App() {
           <span>
             글자 {counts.chars.toLocaleString()} <em>(공백 제외 {counts.charsNoSpace.toLocaleString()})</em>
           </span>
+          <span>낱말 {counts.words.toLocaleString()}</span>
+          <span>
+            {paperLabel(geom)} <em>{geom.landscape ? '가로' : '세로'}</em>
+          </span>
           <div className="status-right">
             <button className={viewMode === 'single' ? 'on' : ''} title="한 페이지 보기" onClick={showSingle}>
               {Icon.pageSingle}
@@ -1335,6 +1748,191 @@ export default function App() {
           </div>
         </footer>
       )}
+
+      {pageOpen && <PageSetupDialog geom={geom} onCancel={() => setPageOpen(false)} onApply={applyPageSetup} />}
+      {linkOpen && <LinkDialog init={linkInit} onCancel={() => setLinkOpen(false)} onApply={applyLink} />}
     </div>
+  )
+}
+
+/**
+ * 링크 편집. `mois.go.kr`처럼 스킴 없이 친 것은 `https://`를 붙여 준다 —
+ * 그러지 않으면 계약(`isSafeHref`)에 걸려 적용이 막히는데, 사용자가 이유를 알기 어렵다.
+ */
+function LinkDialog({
+  init,
+  onCancel,
+  onApply,
+}: {
+  init: { text: string; href: string }
+  onCancel: () => void
+  onApply: (href: string) => void
+}) {
+  const [href, setHref] = useState(init.href)
+  const normalized = href.trim() && !/^([a-z][a-z0-9+.-]*:|#)/i.test(href.trim()) ? `https://${href.trim()}` : href.trim()
+  const valid = normalized === '' || isSafeHref(normalized)
+
+  return (
+    <Dialog
+      title={init.href ? '링크 편집' : '링크 삽입'}
+      onClose={onCancel}
+      footer={
+        <>
+          {init.href && (
+            <button type="button" className="ghost" onClick={() => onApply('')}>
+              링크 제거
+            </button>
+          )}
+          <button type="button" className="ghost" onClick={onCancel}>
+            취소
+          </button>
+          <button type="button" className="primary" disabled={!normalized || !valid} onClick={() => onApply(normalized)}>
+            적용
+          </button>
+        </>
+      }
+    >
+      {init.text && (
+        <div className="field">
+          <span className="field-label">글자</span>
+          <span className="dialog-note">{init.text.length > 40 ? `${init.text.slice(0, 40)}…` : init.text}</span>
+        </div>
+      )}
+      <div className="field">
+        <span className="field-label">주소</span>
+        <input
+          className="link-input"
+          value={href}
+          placeholder="https://… 또는 #b7"
+          aria-label="링크 주소"
+          onChange={(e) => setHref(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && normalized && valid) onApply(normalized)
+          }}
+        />
+      </div>
+      <p className="dialog-note">
+        {!href.trim()
+          ? '외부 주소(https:·mailto:) 또는 문서 안 블록(#b7)을 가리킬 수 있습니다.'
+          : valid
+            ? normalized !== href.trim()
+              ? `${normalized} 로 저장됩니다.`
+              : 'docx·odt로 저장하면 링크가 그대로 살아 있습니다. hwpx는 아직 주소를 담지 못해 글자만 남습니다.'
+            : '허용되지 않는 주소입니다 — https:· mailto: 또는 #b7 형태만 됩니다.'}
+      </p>
+    </Dialog>
+  )
+}
+
+/** 페이지 설정 — 값은 문서에서 읽어 오고, 적용을 눌러야 문서에 쓴다 */
+function PageSetupDialog({
+  geom,
+  onCancel,
+  onApply,
+}: {
+  geom: PageGeom
+  onCancel: () => void
+  onApply: (g: PageGeom) => void
+}) {
+  const [draft, setDraft] = useState<PageGeom>(geom)
+  // 네 변이 같으면 하나로 묶어 보여준다 — 다르면 "직접"으로 두고 상단 여백만 편집하게 한다
+  const [t, r, b, l] = draft.margins
+  const uniform = t === r && r === b && b === l
+
+  const setMargin = (mm: number) => setDraft({ ...draft, margins: [mm, mm, mm, mm] })
+
+  return (
+    <Dialog
+      title="페이지 설정"
+      onClose={onCancel}
+      footer={
+        <>
+          <button type="button" className="ghost" onClick={onCancel}>
+            취소
+          </button>
+          <button type="button" className="primary" onClick={() => onApply(draft)}>
+            적용
+          </button>
+        </>
+      }
+    >
+      <div className="field">
+        <span className="field-label">용지</span>
+        <Seg
+          value={draft.paper ?? ('' as PaperKey)}
+          onChange={(v) => setDraft({ ...draft, ...fromPaper(v, draft.landscape) })}
+          options={(Object.keys(PAPERS) as PaperKey[]).map((k) => ({ v: k, label: PAPERS[k].label }))}
+        />
+      </div>
+
+      <div className="field">
+        <span className="field-label">방향</span>
+        <Seg
+          value={draft.landscape}
+          onChange={(v) =>
+            setDraft(
+              v === draft.landscape
+                ? draft
+                : // 규격 밖 용지도 방향은 바꿀 수 있어야 한다 — 크기를 뒤집는다
+                  { ...draft, landscape: v, size: { w: draft.size.h, h: draft.size.w } },
+            )
+          }
+          options={[
+            { v: false, label: '세로' },
+            { v: true, label: '가로' },
+          ]}
+        />
+      </div>
+
+      {!draft.paper && (
+        <p className="dialog-note">
+          이 문서는 규격 용지가 아닙니다 ({draft.size.w}×{draft.size.h}mm). 용지를 고르면 크기가 바뀝니다 — 그냥 두면
+          원본 크기가 유지됩니다.
+        </p>
+      )}
+
+      <div className="field">
+        <span className="field-label">여백</span>
+        <Seg
+          value={uniform ? t : -1}
+          onChange={(v) => setMargin(v)}
+          options={[
+            { v: 15, label: '좁게' },
+            { v: 20, label: '보통' },
+            { v: 30, label: '넓게' },
+          ]}
+        />
+      </div>
+
+      <div className="field">
+        <span className="field-label" />
+        <input
+          type="number"
+          min={0}
+          max={80}
+          step={1}
+          value={uniform ? t : ''}
+          placeholder="직접"
+          aria-label="여백 (mm)"
+          onChange={(e) => {
+            const v = Number(e.target.value)
+            if (Number.isFinite(v)) setMargin(Math.min(80, Math.max(0, v)))
+          }}
+        />
+        <span className="dialog-note">mm</span>
+      </div>
+
+      {!uniform && (
+        <p className="dialog-note">
+          지금 여백이 네 변이 다릅니다 — 위 {t} · 오른쪽 {r} · 아래 {b} · 왼쪽 {l}mm.
+          위에서 하나를 고르면 네 변이 같아집니다.
+        </p>
+      )}
+
+      <p className="dialog-note">
+        {paperLabel(draft)} · {draft.size.w} × {draft.size.h}mm. 적용하면 용지 높이에 맞춰 페이지를 다시 나눕니다 —
+        페이지 수가 바뀔 수 있습니다.
+      </p>
+    </Dialog>
   )
 }

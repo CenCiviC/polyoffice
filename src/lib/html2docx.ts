@@ -10,7 +10,7 @@
 import { zipSync, strToU8 } from 'fflate'
 
 import type { IrBlock, IrCell, IrDoc, IrImage, IrPara, IrRun } from './ir-model'
-import { DEFAULT_LINE_HEIGHT, DOC_FONT, HEADING_SPACE, LINE_BREAK, readIr, xmlSafe } from './ir-model'
+import { DEFAULT_LINE_HEIGHT, DOC_FONT, HEADING_SPACE, LINE_BREAK, LINK_COLOR, readIr, xmlSafe } from './ir-model'
 import { fontKeyFor, obfuscateFont, type EmbeddedFont } from './font-embed'
 
 /** 뷰어 CSS의 기본 글꼴 대체 사슬(Apple SD Gothic Neo → Malgun Gothic)에서 Word가 쓸 수 있는 것 */
@@ -44,13 +44,26 @@ const ROOT_RELS = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
  * hwpx 템플릿·ODF 기본값에는 그런 여백이 없어서 docx만 페이지 수가 늘어났다.
  * 뷰어 BASE_CSS(line-height 1.6, p margin 0)를 기준으로 기본값을 명시해 셋을 맞춘다.
  */
-/** 문단 줄간격·앞뒤 여백 — CSS line-height와 같은 의미(글자 크기 × 배수)를 pt로 못박는다 */
-const lineSpacingXml = (maxPt: number, heading = false) => {
+/**
+ * 문단 줄간격·앞뒤 여백 — CSS line-height와 같은 의미(글자 크기 × 배수)를 pt로 못박는다.
+ * 앞뒤 여백은 **IR이 준 값을 그대로 쓴다** — 제목 기본값은 `readPara`가 이미 채워 준다.
+ */
+const lineSpacingXml = (maxPt: number, beforePt = 0, afterPt = 0, heading = false) => {
   const ratio = heading ? HEADING_SPACE.lineHeight : DEFAULT_LINE_HEIGHT
-  const before = heading ? Math.round(HEADING_SPACE.beforePt * 20) : 0
-  const after = heading ? Math.round(HEADING_SPACE.afterPt * 20) : 0
-  return `<w:spacing w:before="${before}" w:after="${after}" w:line="${Math.round(maxPt * ratio * 20)}" w:lineRule="atLeast"/>`
+  return `<w:spacing w:before="${twip(beforePt)}" w:after="${twip(afterPt)}" w:line="${Math.round(maxPt * ratio * 20)}" w:lineRule="atLeast"/>`
 }
+
+/** 들여쓰기 — 첫 줄이 음수면 내어쓰기라 Word에서는 부호를 뒤집어 hanging으로 간다 */
+const indentXml = (indentPt: number, firstLinePt: number): string => {
+  const attrs: string[] = []
+  if (indentPt) attrs.push(`w:left="${twip(indentPt)}"`)
+  if (firstLinePt > 0) attrs.push(`w:firstLine="${twip(firstLinePt)}"`)
+  else if (firstLinePt < 0) attrs.push(`w:hanging="${twip(-firstLinePt)}"`)
+  return attrs.length ? `<w:ind ${attrs.join(' ')}/>` : ''
+}
+
+/** OOXML의 색은 `#` 없는 6자리다 */
+const LINK_COLOR_HEX = LINK_COLOR.slice(1)
 
 const STYLES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
@@ -83,13 +96,49 @@ class DocxWriter {
 
   /** 그림을 패키지에 넣고 관계 id를 돌려준다 */
   imageRel(img: IrImage): string {
-    const id = `rId${100 + this.media.length}`
+    // 그림과 링크가 같은 관계 목록을 쓰므로 번호는 목록 길이에서 뽑는다 (겹치면 문서가 안 열린다)
+    const id = `rId${100 + this.rels.length}`
     const name = `image${this.media.length + 1}.${img.ext}`
     this.media.push({ name, bytes: base64ToBytes(img.base64) })
     this.rels.push(
       `<Relationship Id="${id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/${name}"/>`,
     )
     return id
+  }
+
+  /**
+   * 하이퍼링크. 외부 주소는 관계(rels)로 나가고 `TargetMode="External"`이 필수다.
+   * 문서 내 앵커(`#b7`)는 관계 없이 `w:anchor`로 — 다만 대응하는 책갈피는 아직 안 쓰므로
+   * Word에서 눌러도 이동하지 않는다 (책갈피는 목차와 함께 온다).
+   */
+  hyperlinkXml(href: string, inner: string): string {
+    if (href.startsWith('#')) return `<w:hyperlink w:anchor="${esc(href.slice(1))}">${inner}</w:hyperlink>`
+    const id = `rId${100 + this.rels.length}`
+    this.rels.push(
+      `<Relationship Id="${id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="${esc(href)}" TargetMode="External"/>`,
+    )
+    return `<w:hyperlink r:id="${id}">${inner}</w:hyperlink>`
+  }
+
+  /**
+   * 런을 링크 단위로 묶는다. `w:hyperlink`는 런을 감싸는 문단 수준 요소라
+   * 같은 링크에 붙은 연속 런은 **한 덩어리로 감싸야** 워드에서 한 링크로 잡힌다.
+   * (런 병합은 `sameStyle`이 link까지 보므로, 여기 오는 경계는 서식이 다른 경우뿐이다.)
+   */
+  runsXml(runs: IrRun[]): string {
+    const out: string[] = []
+    for (let i = 0; i < runs.length; ) {
+      const link = runs[i].link
+      let j = i
+      while (j < runs.length && runs[j].link === link) j++
+      const inner = runs
+        .slice(i, j)
+        .map((r) => this.runXml(r))
+        .join('')
+      out.push(link ? this.hyperlinkXml(link, inner) : inner)
+      i = j
+    }
+    return out.join('')
   }
 
   mediaFiles() {
@@ -122,8 +171,12 @@ class DocxWriter {
     if (run.bold) pr.push('<w:b/>')
     if (run.italic) pr.push('<w:i/>')
     if (run.strike) pr.push('<w:strike/>')
-    if (run.underline) pr.push('<w:u w:val="single"/>')
+    if (run.underline || run.link) pr.push('<w:u w:val="single"/>')
+    // 색을 직접 지정한 런은 그 색이 이긴다 (뷰어에서 인라인 style이 a 규칙을 이기는 것과 같다)
     if (run.color && run.color !== '#000000') pr.push(`<w:color w:val="${run.color.slice(1)}"/>`)
+    else if (run.link) pr.push(`<w:color w:val="${LINK_COLOR_HEX}"/>`)
+    if (run.vertAlign)
+      pr.push(`<w:vertAlign w:val="${run.vertAlign === 'super' ? 'superscript' : 'subscript'}"/>`)
     pr.push(`<w:sz w:val="${Math.max(2, Math.round(run.sizePt * 2))}"/>`)
     const rPr = `<w:rPr>${pr.join('')}</w:rPr>`
 
@@ -166,10 +219,12 @@ class DocxWriter {
     // 보다 30%쯤 커진다(맑은 고딕 기준 자연 줄높이 ≈ 1.33em). 브라우저와 같게 보이려면
     // 문단에서 가장 큰 글자 크기를 재서 pt로 못박는다. 그림·큰 글자가 잘리지 않게 atLeast.
     const maxPt = para.runs.reduce((m, r) => Math.max(m, r.sizePt), 0) || 10
-    const parts = [lineSpacingXml(maxPt, para.heading > 0)]
+    const parts = [lineSpacingXml(maxPt, para.spaceBeforePt, para.spaceAfterPt, para.heading > 0)]
     if (jc && jc !== 'left') parts.push(`<w:jc w:val="${jc}"/>`)
+    const ind = indentXml(para.indentPt, para.firstLinePt)
+    if (ind) parts.push(ind)
     const pPr = `<w:pPr>${parts.join('')}</w:pPr>`
-    const runs = para.runs.map((r) => this.runXml(r)).join('')
+    const runs = this.runsXml(para.runs)
     const imgs = para.images.map((im) => this.imageXml(im, ++seq.n)).join('')
     return `<w:p>${pPr}${runs}${imgs}</w:p>`
   }

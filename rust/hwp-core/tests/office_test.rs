@@ -126,6 +126,16 @@ fn parses_docx() {
     let model = hwp_core::parse_docx_document(&fixture("sample.docx")).expect("docx 파싱 실패");
     assert_eq!(model.version, "docx");
     assert_common_shape(&model, "docx");
+    assert_inline_vocab(&model, "docx");
+
+    // 문서 내 앵커는 #이름으로 온다 (외부 관계가 아니라 w:anchor)
+    let anchor = model.sections[0]
+        .paragraphs
+        .iter()
+        .flat_map(|p| p.runs.iter())
+        .find(|r| r.text.contains("앵커링크"))
+        .expect("앵커링크 런 없음");
+    assert_eq!(anchor.link.as_deref(), Some("#b7"));
 }
 
 #[test]
@@ -133,6 +143,69 @@ fn parses_odt() {
     let model = hwp_core::parse_odt_document(&fixture("sample.odt")).expect("odt 파싱 실패");
     assert_eq!(model.version, "odt");
     assert_common_shape(&model, "odt");
+    assert_inline_vocab(&model, "odt");
+}
+
+/// docx·odt가 같은 값을 내야 하는 것: 링크·첨자·문단 여백.
+/// 픽스처는 서식 값을 우리가 정한 것이라 숫자를 그대로 단언할 수 있다
+/// (들여쓰기 20pt=2000hwpunit · 첫 줄 13pt=1300 · 내어쓰기 -15pt=-1500 · 앞 5pt=500 · 뒤 3pt=300).
+fn assert_inline_vocab(model: &hwp_core::DocModel, who: &str) {
+    let runs: Vec<&hwp_core::Run> = model.sections[0]
+        .paragraphs
+        .iter()
+        .flat_map(|p| p.runs.iter())
+        .collect();
+
+    // 하이퍼링크 — 주소가 런에 붙어야 한다
+    let linked = runs
+        .iter()
+        .find(|r| r.text.contains("링크된글자"))
+        .unwrap_or_else(|| panic!("{who}: '링크된글자' 런 없음"));
+    assert_eq!(
+        linked.link.as_deref(),
+        Some("https://www.mois.go.kr/manual"),
+        "{who}: 링크 주소"
+    );
+
+    // 링크 없는 런과 합쳐지면 안 된다
+    assert_eq!(linked.text, "링크된글자", "{who}: 링크 경계가 뭉개졌다");
+    let plain = runs
+        .iter()
+        .find(|r| r.text.contains("보통글자"))
+        .unwrap_or_else(|| panic!("{who}: '보통글자' 런 없음"));
+    assert_eq!(plain.link, None, "{who}: 링크 아닌 런에 주소가 붙었다");
+
+    // 위/아래첨자 — CharShape.attr 비트
+    let attr_of = |r: &hwp_core::Run| model.info.char_shapes[r.char_shape_id as usize].attr;
+    let supers: Vec<_> = runs.iter().filter(|r| attr_of(r) & hwp_core::ATTR_SUPER != 0).collect();
+    let subs: Vec<_> = runs.iter().filter(|r| attr_of(r) & hwp_core::ATTR_SUB != 0).collect();
+    assert_eq!(supers.len(), 1, "{who}: 위첨자 런 개수");
+    assert_eq!(subs.len(), 1, "{who}: 아래첨자 런 개수");
+    assert_eq!(supers[0].text, "2", "{who}: 위첨자 내용");
+    assert_eq!(subs[0].text, "2", "{who}: 아래첨자 내용");
+
+    // 문단 여백 — 들여쓰기 문단과 내어쓰기 문단
+    let shapes = &model.info.para_shapes;
+    let shape_of = |needle: &str| {
+        let p = model.sections[0]
+            .paragraphs
+            .iter()
+            .find(|p| p.runs.iter().any(|r| r.text.contains(needle)))
+            .unwrap_or_else(|| panic!("{who}: {needle:?} 문단 없음"));
+        &shapes[p.shape_index as usize]
+    };
+    let indented = shape_of("링크된글자");
+    assert_eq!(indented.indent, 2000, "{who}: 왼쪽 들여쓰기");
+    assert_eq!(indented.first_line, 1300, "{who}: 첫 줄 들여쓰기");
+    assert_eq!(indented.space_before, 500, "{who}: 문단 앞 여백");
+    assert_eq!(indented.space_after, 300, "{who}: 문단 뒤 여백");
+
+    let hanging = shape_of("면적 1,200m");
+    assert_eq!(hanging.indent, 3000, "{who}: 내어쓰기 문단 왼쪽");
+    assert_eq!(
+        hanging.first_line, -1500,
+        "{who}: 내어쓰기는 first_line 음수 (부호가 뒤집히면 안 된다)"
+    );
 }
 
 /// Word 97 실문서(Apache POI 테스트 코퍼스). 조각표·CHPX·PAPX가 다 걸린다.
@@ -306,4 +379,44 @@ fn doc_extracts_pictures() {
         .map(|p| p.images.len())
         .sum();
     assert_eq!(placed, 2, "그림이 문단에 배치되지 않음");
+}
+
+/// .doc의 문단 여백 sprm(0x840F/0x8411/0xA413/0xA414)과 첨자(sprmCIss) 회귀 가드.
+///
+/// **정직하게 적어 둔다**: 이 코퍼스에는 들여쓰기가 있는 문단이 없어서 0x840F/0x8411은
+/// 실제로 발화하지 않는다. 확인된 것은 `word97_pictures.doc`의 문단 뒤 여백 7.5pt 하나뿐이다.
+/// 그래서 여기서 지키는 것은 "맞는 값이 나온다"가 아니라 **"쓰레기 값이 안 나온다"** 다 —
+/// opcode나 피연산자 길이를 잘못 잡으면 수치가 터무니없이 커지므로 그걸 잡는다.
+#[test]
+fn doc_paragraph_margins_are_sane() {
+    // 실문서 여백이 한 변에 100pt(=10000 hwpunit)를 넘는 일은 사실상 없다
+    const SANE: i32 = 10_000;
+    let mut seen_nonzero = false;
+
+    for name in [
+        "sample_word97.doc",
+        "word97_table_merges.doc",
+        "word97_pictures.doc",
+    ] {
+        let model = hwp_core::parse_doc_document(&fixture(name)).expect("doc 파싱 실패");
+        for (i, p) in model.info.para_shapes.iter().enumerate() {
+            for (what, v) in [
+                ("indent", p.indent),
+                ("first_line", p.first_line),
+                ("space_before", p.space_before),
+                ("space_after", p.space_after),
+            ] {
+                assert!(
+                    v.abs() <= SANE,
+                    "{name} paraShape[{i}].{what} = {v} — sprm 해석이 어긋났다"
+                );
+                if v != 0 {
+                    seen_nonzero = true;
+                }
+            }
+        }
+    }
+
+    // 최소 한 값은 실제로 읽혀야 한다 (전부 0이면 sprm을 아예 못 읽고 있다는 뜻)
+    assert!(seen_nonzero, "여백 sprm이 하나도 안 읽혔다");
 }

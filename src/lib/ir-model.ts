@@ -15,6 +15,14 @@ export interface IrStyle {
   underline: boolean
   strike: boolean
   family: string | null
+  /** 위/아래첨자 — `<sup>`/`<sub>` */
+  vertAlign: 'super' | 'sub' | null
+  /**
+   * 하이퍼링크 대상. 스타일이 아니라 관계지만 여기 두는 이유:
+   * `<a>` 안의 `<span>`처럼 중첩됐을 때 **상속과 런 병합이 다른 서식과 똑같이 동작해야** 한다.
+   * 따로 두면 링크 경계마다 런을 쪼개는 코드를 백엔드 세 곳이 각자 갖게 된다.
+   */
+  link: string | null
 }
 
 export interface IrRun extends IrStyle {
@@ -35,6 +43,14 @@ export interface IrPara {
   align: IrAlign
   runs: IrRun[]
   images: IrImage[]
+  /** 문단 왼쪽 들여쓰기(pt) */
+  indentPt: number
+  /** 첫 줄 들여쓰기(pt) — **음수면 내어쓰기** */
+  firstLinePt: number
+  /** 문단 앞 여백(pt) */
+  spaceBeforePt: number
+  /** 문단 뒤 여백(pt) */
+  spaceAfterPt: number
   /** h1~h6이면 1~6, 아니면 0. 뷰어 CSS의 제목 여백·줄간격을 백엔드가 그대로 재현하는 데 쓴다 */
   heading: number
 }
@@ -56,6 +72,13 @@ export const LINE_BREAK: 'normal' | 'strict' = 'strict'
  * 글자 폭이 달라지고 첫 줄부터 줄바꿈 위치가 어긋난다. 두 곳 모두에 실재하는 글꼴을 쓸 것.
  */
 export const DOC_FONT = 'Noto Sans KR'
+
+/**
+ * 하이퍼링크 글자색 — 뷰어 BASE_CSS의 `a[href]` 규칙과 **같은 값이어야 한다**.
+ * 링크는 IR에 색을 들고 있지 않고(관계만 있다) 화면에서는 뷰어 CSS가 칠하므로,
+ * 백엔드도 같은 값으로 칠해야 화면과 저장물이 같아진다. 제목 여백과 같은 원리.
+ */
+export const LINK_COLOR = '#1A4FD6'
 
 export interface IrCell {
   colSpan: number
@@ -118,6 +141,8 @@ const DEFAULT_STYLE: IrStyle = {
   underline: false,
   strike: false,
   family: null,
+  vertAlign: null,
+  link: null,
 }
 
 function styleProp(el: Element | null, prop: string): string | null {
@@ -190,6 +215,9 @@ function readStyle(el: Element | null, inherited: IrStyle): IrStyle {
     underline: tag === 'U' || deco.includes('underline') || inherited.underline,
     strike: tag === 'S' || deco.includes('line-through') || inherited.strike,
     family: styleProp(el, 'font-family')?.replace(/['"]/g, '') ?? inherited.family,
+    vertAlign: tag === 'SUP' ? 'super' : tag === 'SUB' ? 'sub' : inherited.vertAlign,
+    // 각주 참조(`data-fn-ref`)는 링크가 아니다 — href가 있는 것만 링크로 본다
+    link: (tag === 'A' && el.getAttribute('href')) || inherited.link,
   }
 }
 
@@ -215,7 +243,19 @@ function readImage(img: Element): IrImage | null {
 
 function readPara(p: Element): IrPara {
   const h = /^H([1-6])$/.exec(p.tagName)
-  const para: IrPara = { align: alignOf(p), runs: [], images: [], heading: h ? Number(h[1]) : 0 }
+  const heading = h ? Number(h[1]) : 0
+  const para: IrPara = {
+    align: alignOf(p),
+    runs: [],
+    images: [],
+    heading,
+    indentPt: toPt(styleProp(p, 'margin-left')) ?? 0,
+    firstLinePt: toPt(styleProp(p, 'text-indent')) ?? 0,
+    // 제목 여백의 진실원은 IR이다. IR에 안 적혀 있을 때만 뷰어 CSS와 같은 기본값으로 채운다
+    // — 그래야 백엔드 셋이 각자의 기본값(hwpx 180% / ODF 0 / Word 8pt)으로 갈라지지 않는다.
+    spaceBeforePt: toPt(styleProp(p, 'margin-top')) ?? (heading ? HEADING_SPACE.beforePt : 0),
+    spaceAfterPt: toPt(styleProp(p, 'margin-bottom')) ?? (heading ? HEADING_SPACE.afterPt : 0),
+  }
   const base = readStyle(p, DEFAULT_STYLE)
 
   const push = (text: string, style: IrStyle) => {
@@ -259,7 +299,9 @@ function sameStyle(a: IrStyle, b: IrStyle): boolean {
     a.italic === b.italic &&
     a.underline === b.underline &&
     a.strike === b.strike &&
-    a.family === b.family
+    a.family === b.family &&
+    a.vertAlign === b.vertAlign &&
+    a.link === b.link
   )
 }
 

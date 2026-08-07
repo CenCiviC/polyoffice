@@ -51,6 +51,8 @@
   --shadow-sm: 0 1px 2px rgb(16 24 40 / 0.05);
   --shadow-page: 0 1px 3px 1px rgb(16 24 40 / 0.12);
   --shadow-float: 0 4px 12px rgb(16 24 40 / 0.12); /* elevation md — 팝오버/토스트/플로팅 */
+  --shadow-dialog: 0 16px 40px rgb(16 24 40 / 0.18); /* elevation lg — 다이얼로그 (스크림과 함께) */
+  --scrim: rgb(16 24 40 / 0.4); /* neutral-900 @40% */
 }
 
 * {
@@ -694,6 +696,238 @@ button {
   border-radius: 999px;
   background: var(--danger);
   flex: none;
+}
+
+/* ── 개요 레일 (좌측) ────────────────────────────────────────── */
+.outline {
+  width: 208px;
+  flex: none;
+  background: var(--surface);
+  border-right: 1px solid var(--line);
+  overflow-y: auto;
+  padding: 12px 8px;
+}
+
+.outline-head {
+  font-size: 11px;
+  font-weight: 700; /* ts-micro-caps */
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+  padding: 0 8px 8px;
+}
+
+.outline-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-sm);
+  padding: 5px 8px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--ink-soft);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+
+.outline-item:hover {
+  background: var(--sunken);
+  color: var(--ink);
+}
+
+.outline-item.on {
+  background: var(--brand-50);
+  color: var(--brand-700);
+  font-weight: 600;
+}
+
+/* 개요 수준은 들여쓰기로만 — 크기·굵기를 쓰면 레일이 시끄러워진다 */
+.outline-item.lv2 {
+  padding-left: 20px;
+}
+.outline-item.lv3 {
+  padding-left: 32px;
+}
+.outline-item.lv4,
+.outline-item.lv5,
+.outline-item.lv6 {
+  padding-left: 44px;
+}
+
+.outline-empty {
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--ink-muted);
+}
+
+/* ── 모달 · 팝오버 (공유 계층) ───────────────────────────────── */
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: var(--scrim);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.dialog {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-dialog);
+  width: 360px;
+  max-width: 100%;
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.dialog-head {
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--line);
+  font-size: 15px; /* ts-subheading (17)보다 한 단계 낮춰 크롬을 조용히 */
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.dialog-body {
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+}
+
+.dialog-foot {
+  padding: 12px 18px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.field {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.field-label {
+  font-size: 12px;
+  font-weight: 600; /* ts-label */
+  color: var(--ink-soft);
+  min-width: 52px;
+  flex: none;
+}
+
+/* 분절 컨트롤 — 상태는 색 + 외곽선 이중 인코딩 */
+.seg {
+  display: flex;
+  gap: 2px;
+  flex-wrap: wrap;
+}
+
+.seg button {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink-soft);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+
+.seg button:hover {
+  background: var(--sunken);
+  color: var(--ink);
+}
+
+.seg button.on {
+  background: var(--brand-50);
+  border-color: var(--brand-600);
+  color: var(--brand-700);
+  font-weight: 600;
+}
+
+.field .link-input {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 12px;
+  padding: 0 8px;
+}
+
+.dialog button.primary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.field input[type='number'] {
+  height: 28px;
+  width: 68px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  padding: 0 8px;
+}
+
+.dialog-note {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink-muted);
+  line-height: 1.5;
+  margin: 0;
+}
+
+.dialog button.ghost {
+  height: 32px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink-soft);
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.dialog button.ghost:hover {
+  background: var(--sunken);
+  color: var(--ink);
+}
+
+.dialog button.primary {
+  height: 32px;
+  padding: 0 14px;
+  border: 1px solid var(--brand-600);
+  background: var(--brand-600);
+  color: var(--neutral-0);
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.dialog button.primary:hover {
+  background: var(--brand-700);
+  border-color: var(--brand-700);
 }
 
 @media (prefers-reduced-motion: reduce) {

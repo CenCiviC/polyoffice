@@ -46,12 +46,22 @@ function rgbToHex(rgb: string): string | null {
 
 function ptOf(v: string | undefined | null): number | null {
   if (!v) return null
-  const m = v.match(/([\d.]+)\s*(pt|in|mm)?/)
+  // 부호를 반드시 받는다 — 내어쓰기(text-indent 음수)에서 -가 빠지면 값이 조용히 뒤집힌다
+  const m = v.match(/(-?[\d.]+)\s*(pt|in|mm)?/)
   if (!m) return null
   const n = parseFloat(m[1])
   if (m[2] === 'in') return n * 72
   if (m[2] === 'mm') return n * 2.8346
   return n
+}
+
+/** 문단 여백(pt) — paraPr `<hh:margin>`에 실린다 */
+interface ParaMargins {
+  indentPt: number
+  /** 첫 줄 — 음수면 내어쓰기 */
+  firstLinePt: number
+  beforePt: number
+  afterPt: number
 }
 
 interface CharStyle {
@@ -65,6 +75,8 @@ interface CharStyle {
   shade: string | null
   /** 첫 번째 font-family (없으면 null → 템플릿 기본 폰트) */
   family: string | null
+  /** 위/아래첨자 — charPr의 무속성 자식 `<hh:supscript/>` `<hh:subscript/>` */
+  vertAlign: 'super' | 'sub' | null
 }
 
 const CHARPR_TMPL = (id: number, s: CharStyle, fontId: number) => `<hh:charPr id="${id}" height="${Math.round(
@@ -80,7 +92,7 @@ const CHARPR_TMPL = (id: number, s: CharStyle, fontId: number) => `<hh:charPr id
 <hh:outline type="NONE"/>
 <hh:shadow type="NONE" color="#C0C0C0" offsetX="5" offsetY="5"/>${s.bold ? '\n<hh:bold/>' : ''}${
   s.italic ? '\n<hh:italic/>' : ''
-}
+}${s.vertAlign === 'super' ? '\n<hh:supscript/>' : s.vertAlign === 'sub' ? '\n<hh:subscript/>' : ''}
 </hh:charPr>`
 
 const BORDERFILL_TMPL = (id: number, fill: string | null) => `<hh:borderFill id="${id}" threeD="0" shadow="0" centerLine="NONE" breakCellSeparateLine="0">
@@ -185,13 +197,21 @@ class HwpxWriter {
     return id
   }
 
-  /** 기본형은 템플릿 paraPr 0 재사용, 정렬/줄간격이 다르면 paraPr 0을 복제해 해당 값만 교체 */
-  paraPrId(align: string, lineHeight?: number | null, heading = false): number {
+  /**
+   * 기본형은 템플릿 paraPr 0 재사용, 정렬/줄간격/여백이 다르면 paraPr 0을 복제해 해당 값만 교체.
+   *
+   * 여백은 paraPr의 `<hh:margin>` 자식들이다 (실물 hwpx로 확인):
+   * `<hc:intent>` 첫 줄 · `<hc:left>` 왼쪽 · `<hc:prev>`/`<hc:next>` 문단 앞뒤. 단위는 HWPUNIT(pt×100).
+   * 템플릿에 이 다섯이 이미 있으므로 값만 갈아끼운다.
+   */
+  paraPrId(align: string, lineHeight?: number | null, heading = false, margins?: ParaMargins): number {
     const horizontal = align === 'center' ? 'CENTER' : align === 'right' ? 'RIGHT' : 'LEFT'
     // CSS line-height 비율 ≈ 한글 줄간격 PERCENT (1.5 → 150%)
     const percent = lineHeight ? Math.round(lineHeight * 100) : heading ? Math.round(HEADING_SPACE.lineHeight * 100) : null
-    if (horizontal === 'LEFT' && percent === null && !heading) return 0
-    const key = `${horizontal}|${percent ?? ''}|${heading ? 'h' : ''}`
+    const m = margins ?? { indentPt: 0, firstLinePt: 0, beforePt: 0, afterPt: 0 }
+    const plainMargins = !m.indentPt && !m.firstLinePt && !m.beforePt && !m.afterPt
+    if (horizontal === 'LEFT' && percent === null && !heading && plainMargins) return 0
+    const key = `${horizontal}|${percent ?? ''}|${heading ? 'h' : ''}|${m.indentPt}|${m.firstLinePt}|${m.beforePt}|${m.afterPt}`
     let id = this.paraPrs.get(key)
     if (id === undefined) {
       id = this.nextParaPrId++
@@ -201,12 +221,12 @@ class HwpxWriter {
         .replace(/horizontal="[A-Z]+"/, `horizontal="${horizontal}"`)
       if (percent !== null)
         xml = xml.replace(/lineSpacing type="PERCENT" value="\d+"/g, `lineSpacing type="PERCENT" value="${percent}"`)
-      // 뷰어 CSS의 제목 여백(margin: 4pt 0 2pt)을 문단 앞뒤 여백으로 옮긴다
-      if (heading) {
-        xml = xml
-          .replace(/(<hc:prev value=")\d+(")/, `$1${hwpUnit(HEADING_SPACE.beforePt)}$2`)
-          .replace(/(<hc:next value=")\d+(")/, `$1${hwpUnit(HEADING_SPACE.afterPt)}$2`)
-      }
+      // 앞뒤 여백·들여쓰기는 IR이 준 값 그대로 (제목 기본값은 ir-model의 readPara가 채워 준다)
+      xml = xml
+        .replace(/(<hc:intent value=")-?\d+(")/g, `$1${hwpUnit(m.firstLinePt)}$2`)
+        .replace(/(<hc:left value=")-?\d+(")/g, `$1${hwpUnit(m.indentPt)}$2`)
+        .replace(/(<hc:prev value=")-?\d+(")/g, `$1${hwpUnit(m.beforePt)}$2`)
+        .replace(/(<hc:next value=")-?\d+(")/g, `$1${hwpUnit(m.afterPt)}$2`)
       this.newParaPrXml.push(xml)
     }
     return id
@@ -288,6 +308,20 @@ function charStyleOf(el: Element | null): CharStyle {
     strike: deco.includes('line-through'),
     shade: bg ? rgbToHex(bg) : null,
     family: get('font-family'),
+    vertAlign: null,
+  }
+}
+
+/**
+ * 문단 여백을 인라인 style에서 읽는다 (ir-model.readPara와 같은 규칙).
+ * 제목은 IR에 안 적혀 있을 때만 뷰어 CSS와 같은 기본값으로 채운다 — 백엔드 셋이 같은 값을 내야 한다.
+ */
+function marginsOf(p: Element, heading: boolean): ParaMargins {
+  return {
+    indentPt: ptOf(tdStyle(p, 'margin-left')) ?? 0,
+    firstLinePt: ptOf(tdStyle(p, 'text-indent')) ?? 0,
+    beforePt: ptOf(tdStyle(p, 'margin-top')) ?? (heading ? HEADING_SPACE.beforePt : 0),
+    afterPt: ptOf(tdStyle(p, 'margin-bottom')) ?? (heading ? HEADING_SPACE.afterPt : 0),
   }
 }
 
@@ -353,23 +387,46 @@ class SectionBuilder {
 
   private runsXml(p: Element, defaultStyle?: CharStyle): string {
     const defaultCharPr = defaultStyle ? this.w.charPrId(defaultStyle) : 0
+    const runs = this.inlineRuns(p, defaultStyle ?? charStyleOf(null), defaultCharPr, null)
+    return runs.length ? runs.join('') : `<hp:run charPrIDRef="${defaultCharPr}"><hp:t/></hp:run>`
+  }
+
+  /**
+   * 인라인 자식 → hp:run 목록.
+   *
+   * `<a>`·`<sup>`·`<sub>`는 안쪽에 다시 `<span>`을 품을 수 있어서 재귀한다. 재귀하지 않으면
+   * **그 안의 글자가 통째로 사라진다** — 예전에는 이 셋에 해당하는 분기가 없어서
+   * 링크 텍스트가 조용히 없어졌다.
+   *
+   * `vertAlign`은 조상에서 물려받아 안쪽 런의 charPr에 얹는다.
+   */
+  private inlineRuns(
+    parent: Element,
+    inherited: CharStyle,
+    defaultCharPr: number,
+    vertAlign: 'super' | 'sub' | null,
+  ): string[] {
     const runs: string[] = []
-    for (const child of Array.from(p.childNodes)) {
+    /** 첨자가 걸려 있으면 기본 charPr을 그대로 못 쓴다 — 첨자를 얹은 것을 따로 등록한다 */
+    const plainId = () => (vertAlign ? this.w.charPrId({ ...inherited, vertAlign }) : defaultCharPr)
+
+    for (const child of Array.from(parent.childNodes)) {
       if (child.nodeType === 3) {
         const t = child.textContent ?? ''
-        if (t) runs.push(`<hp:run charPrIDRef="${defaultCharPr}"><hp:t>${esc(t)}</hp:t></hp:run>`)
+        if (t) runs.push(`<hp:run charPrIDRef="${plainId()}"><hp:t>${esc(t)}</hp:t></hp:run>`)
         continue
       }
+      if (child.nodeType !== 1) continue
       const el = child as Element
       if (el.tagName === 'SPAN') {
-        const id = this.w.charPrId(charStyleOf(el))
+        const id = this.w.charPrId({ ...charStyleOf(el), vertAlign })
         runs.push(`<hp:run charPrIDRef="${id}"><hp:t>${this.textXml(el)}</hp:t></hp:run>`)
       } else if (el.tagName === 'BR') {
-        runs.push(`<hp:run charPrIDRef="${defaultCharPr}"><hp:t><hp:lineBreak/></hp:t></hp:run>`)
+        runs.push(`<hp:run charPrIDRef="${plainId()}"><hp:t><hp:lineBreak/></hp:t></hp:run>`)
       } else if (el.tagName === 'IMG') {
         const pic = this.imageXml(el)
         if (pic) runs.push(pic)
-      } else if (el.tagName === 'SUP') {
+      } else if (el.tagName === 'SUP' || el.tagName === 'SUB') {
         // 각주 참조 → hp:footNote 컨트롤 (내용을 참조 지점에 인라인 삽입, pypandoc 패턴)
         const ref = el.querySelector('a[data-fn-ref]')?.getAttribute('data-fn-ref')
         const content = ref ? this.footnotes.get(ref) : undefined
@@ -381,10 +438,19 @@ class SectionBuilder {
               `<hp:subList id="${inst}" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="CENTER" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">${this.blockChildrenXml(content)}</hp:subList>` +
               `</hp:footNote></hp:ctrl></hp:run>`,
           )
+        } else {
+          // 각주가 아닌 위/아래첨자
+          runs.push(...this.inlineRuns(el, inherited, defaultCharPr, el.tagName === 'SUP' ? 'super' : 'sub'))
         }
+      } else if (el.tagName === 'A') {
+        // 하이퍼링크 **강등**: 주소를 버리고 안쪽 내용만 살린다.
+        // hwpx의 HYPERLINK 필드는 타입명(hwpxlib FieldType)까지는 확정됐지만
+        // hp:stringParam name="Command"의 문자열 문법이 미확인이라, 추측해서 쓰면
+        // 한글이 파일을 못 여는 쪽이 더 위험하다. IR-SPEC 매핑표의 강등 규칙과 같다.
+        runs.push(...this.inlineRuns(el, inherited, defaultCharPr, vertAlign))
       }
     }
-    return runs.length ? runs.join('') : `<hp:run charPrIDRef="${defaultCharPr}"><hp:t/></hp:run>`
+    return runs
   }
 
   /** data URI 이미지 → zip의 BinData 항목 + hp:pic run (pypandoc-hwpx 검증 패턴) */
@@ -418,7 +484,8 @@ class SectionBuilder {
   paragraphXml(p: Element, extraFirstRun = '', opts?: { pageBreak?: boolean; defaultStyle?: CharStyle }): string {
     const align = tdStyle(p, 'text-align') ?? 'left'
     const lh = tdStyle(p, 'line-height')
-    const paraPr = this.w.paraPrId(align, lh ? parseFloat(lh) : null, /^H[1-6]$/.test(p.tagName))
+    const heading = /^H[1-6]$/.test(p.tagName)
+    const paraPr = this.w.paraPrId(align, lh ? parseFloat(lh) : null, heading, marginsOf(p, heading))
     return `<hp:p paraPrIDRef="${paraPr}" styleIDRef="0" pageBreak="${opts?.pageBreak ? 1 : 0}" columnBreak="0" merged="0">${extraFirstRun}${this.runsXml(p, opts?.defaultStyle)}</hp:p>`
   }
 
@@ -501,7 +568,7 @@ class SectionBuilder {
       if (tag === 'P' || tag in HEADING_PT) {
         const defaultStyle: CharStyle | undefined =
           tag in HEADING_PT
-            ? { sizePt: HEADING_PT[tag], color: '#000000', bold: true, italic: false, underline: false, strike: false, shade: null, family: null }
+            ? { sizePt: HEADING_PT[tag], color: '#000000', bold: true, italic: false, underline: false, strike: false, shade: null, family: null, vertAlign: null }
             : undefined
         out.push(this.paragraphXml(el, injected, { pageBreak: pendingBreak, defaultStyle }))
         first = false

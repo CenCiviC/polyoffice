@@ -30,10 +30,16 @@ export interface CharShapeModel {
   /** 장평 % */
   ratio: number
   color: [number, number, number]
-  /** bit0 italic · bit1 bold · bit2-3 underline(1=밑줄, 3=윗줄) */
+  /**
+   * **.hwp CHAR_SHAPE 속성 u32를 그대로 쓰는 계약** — .hwp 리더는 원시 값을 통과시킨다.
+   * bit0 기울임 · bit1 진하게 · bit2-3 밑줄 · bit4-7 밑줄모양 · bit14 위첨자 · bit15 아래첨자
+   */
   attr: number
   fontId: number
 }
+
+/** CharShapeModel.attr 비트 — Rust model.rs의 ATTR_* 상수와 같은 값 */
+export const ATTR = { italic: 1 << 0, bold: 1 << 1, super: 1 << 14, sub: 1 << 15 } as const
 
 export interface BorderFillModel {
   backgroundColor: [number, number, number] | null
@@ -42,6 +48,14 @@ export interface BorderFillModel {
 export interface ParaShapeModel {
   /** 0 양쪽 · 1 왼쪽 · 2 오른쪽 · 3 가운데 */
   align: number
+  /** 왼쪽 들여쓰기 (hwpunit) */
+  indent?: number
+  /** 첫 줄 들여쓰기 (hwpunit) — 음수면 내어쓰기 */
+  firstLine?: number
+  /** 문단 앞 여백 (hwpunit) */
+  spaceBefore?: number
+  /** 문단 뒤 여백 (hwpunit) */
+  spaceAfter?: number
 }
 
 export interface SectionModel {
@@ -79,6 +93,8 @@ export interface RunModel {
   charShapeId: number
   /** '\n' = 줄바꿈, '\t' = 탭 */
   text: string
+  /** 하이퍼링크 대상 (없으면 필드 자체가 없다) */
+  link?: string | null
 }
 
 export interface TableModel {

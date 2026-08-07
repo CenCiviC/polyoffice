@@ -1,4 +1,4 @@
-# Document IR Spec v0.1.0
+# Document IR Spec v0.2.0
 
 HTML 기반 문서 중간표현(IR). 모든 프론트엔드(LLM 생성, hwp/hwpx 가져오기, 편집기)는
 이 어휘로 수렴하고, 모든 백엔드(hwpx, docx, PDF/print)는 이 어휘에서 출발한다.
@@ -54,6 +54,8 @@ hwp 가져오기 ─┼─→ canonical IR(HTML) ─┼─→ docx (OOXML)
 | `<span>` | 글자 스타일 런. style: `font-size·color·font-family·font-style·font-weight·text-decoration` (font-family WRITE는 v0.3 — 현재 기본 폰트로 강등) | ✅ RW |
 | `<br>` | 줄바꿈 (문단 내) | ✅ RW |
 | `<img>` | 이미지. 속성: `src`(data-URI) `alt`, style: `width·height`(pt). READ=BinData→base64, WRITE=zip `BinData/imgN.ext`+`hp:pic`. 브라우저 미지원 포맷(wmf/emf)은 자리표시 텍스트 강등 | ✅ RW |
+| `<sup>` `<sub>` | 위첨자·아래첨자. 속성 없음 | ✅ 편집+WRITE |
+| `<a href>` | 하이퍼링크. `http(s):`·`mailto:` 또는 문서 내 앵커 `#b<n>`. `href`와 `data-fn-ref` 동시 지정 금지 | ✅ 편집+WRITE(docx·odt) / hwpx 강등 |
 | `<sup><a data-fn-ref="…">` | 각주 참조. `doc-footnote`의 `id`를 가리킴 | 🔜 |
 
 ### 블록 주소 체계
@@ -67,7 +69,13 @@ hwp 가져오기 ─┼─→ canonical IR(HTML) ─┼─→ docx (OOXML)
 `font-size`(pt) · `color`(rgb()) · `font-family`(WRITE 시 hwpx fontfaces 7개 언어그룹에 등록) ·
 `font-style` · `font-weight` · `text-decoration`(underline·line-through) · `text-align` ·
 `line-height`(비율 → paraPr lineSpacing PERCENT×100) · `width`(pt|in) · `height`(pt) · `min-height`(in) ·
-`padding`(pt) · `background`(span=형광펜→charPr shadeColor, td=셀 배경→borderFill) · `float`(textbox만)
+`padding`(pt) · `background`(span=형광펜→charPr shadeColor, td=셀 배경→borderFill) · `float`(textbox만) ·
+`margin-left`(pt, 문단 들여쓰기) · `text-indent`(pt, 첫 줄 — **음수면 내어쓰기**) ·
+`margin-top`·`margin-bottom`(pt, 문단 앞뒤 여백)
+
+문단 여백 4종은 `p`·`h1–h6`·`li`에만 쓴다. `margin-top`/`margin-bottom`이 생기면서
+제목 여백의 진실원이 `ir-model.ts`의 `HEADING_SPACE` 상수에서 **IR로 올라왔다** —
+상수는 방출기의 기본값으로만 남고, 백엔드는 IR에 적힌 값만 본다.
 
 이 목록 밖의 CSS 속성은 계약 위반. 렌더 전용 스타일(그림자, 페이지 배경 등)은 인라인이
 아니라 뷰어의 BASE_CSS가 담당한다.
@@ -105,6 +113,10 @@ hwp 가져오기 ─┼─→ canonical IR(HTML) ─┼─→ docx (OOXML)
 | `doc-pagebreak` | 문단 pageBreak 속성 ◐ | `<w:br w:type="page">` ● | — |
 | `doc-header/footer` | 구역 머리말/꼬리말 컨트롤 ◐ | headerN.xml + `<w:headerReference>` ● | 삭제(경고) |
 | `img` | `<hp:pic>` + BinData zip 항목 + manifest ◐ | `<w:drawing>` + media/ + rels ● | — |
+| `sup` / `sub` | `<hh:supscript/>` / `<hh:subscript/>` — charPr의 무속성 자식 (실물 샘플 + hwpxlib CharPr 확인) ● | `<w:vertAlign w:val="superscript\|subscript">` ● | — |
+| `a[href]` | `<hp:fieldBegin type="HYPERLINK">`…`<hp:fieldEnd/>` — 타입명은 hwpxlib `FieldType.HYPERLINK`로 확정됐으나 **`hp:stringParam name="Command"`의 문자열 문법이 미확인** ◐ | `<w:hyperlink r:id>` + document.xml.rels 관계 ● | **hwpx는 현재 강등**: 링크 텍스트만 남기고 주소를 버린다(밑줄·파랑 없이 원래 서식 유지). 주소를 지키려면 docx·odt로 저장 |
+| `margin-left` / `text-indent` | paraPr `<hh:margin>`의 `<hc:left>` / `<hc:intent>` (HWPUNIT=pt×100, 실물 확인) ● | `<w:ind w:left>` / 양수 `w:firstLine`·음수 `w:hanging` (twip=pt×20) ● | — |
+| `margin-top` / `margin-bottom` | paraPr `<hh:margin>`의 `<hc:prev>` / `<hc:next>` ● | `<w:spacing w:before>` / `<w:after>` ● | — |
 | `sup>a[data-fn-ref]` | footNote 컨트롤이 참조 겸함 ◐ | footnoteReference가 참조 겸함 ● | 위첨자 숫자로 강등 |
 
 > ◐/○ 항목은 백엔드 구현 착수 전에 golden file(한글에서 해당 기능 하나만 넣고 hwpx 저장)
@@ -122,6 +134,9 @@ hwp 가져오기 ─┼─→ canonical IR(HTML) ─┼─→ docx (OOXML)
    금지, `doc-header/footer`는 `doc-section` 직계.
 6. `footnote-pair` — 모든 `data-fn-ref` ↔ `doc-footnote[id]` 1:1 대응.
 7. `eq-truth` — `doc-eq`는 `data-latex` 필수.
+8. `link-target` — `a[href]`는 `http:`·`https:`·`mailto:` 또는 문서 내 앵커 `#b<n>`만.
+   그 밖의 스킴(`javascript:`·`data:` 등) 금지. `href`와 `data-fn-ref` 동시 지정 금지
+   (하이퍼링크와 각주 참조는 다른 것이다).
 
 ## 로드맵
 
@@ -129,5 +144,11 @@ hwp 가져오기 ─┼─→ canonical IR(HTML) ─┼─→ docx (OOXML)
 - **v0.2 (현재)**: WRITE 백엔드 hwpx — 템플릿+주입(blank.hwpx, MIT/pypandoc-hwpx),
   hwp→IR→hwpx 왕복 E2E(`bun run tohwpx`) 통과. 남은 것: 한글/한컴독스 실기기 열기 검증,
   `img` READ/WRITE, font-family 매핑.
+- **v0.2.0 (현재)**: 인라인 어휘 `a[href]`·`sup`/`sub`, 문단 여백 어휘 4종
+  (`margin-left`·`text-indent`·`margin-top`·`margin-bottom`). 셋 다 편집기 UI + 쓰기 3종.
+  **읽기**: 다섯 리더가 첨자·문단 여백을 채운다. 하이퍼링크는 docx·odt·hwpx만
+  (hwp·doc은 필드 구조라 미구현). 리더별 상태는 README "현재 지원 범위" 표를 본다.
+  **남은 것**: hwpx 하이퍼링크 **쓰기** — 한글에서 링크 하나만 넣고 저장한 golden file로
+  `Command` 문자열 문법을 확정해야 강등을 걷어낼 수 있다.
 - **v0.3**: 각주·개요번호·pagebreak. docx 백엔드(직접 또는 Pandoc 브리지).
 - **v0.4**: 수식(LaTeX→한글수식 변환기)·글상자·머리말/꼬리말. 보존-패치 아키텍처.

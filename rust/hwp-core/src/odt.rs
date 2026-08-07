@@ -15,6 +15,18 @@ use crate::xml::{attr, check_depth, child, children, descendant, hex_rgb, Xml};
 use crate::zipfs::{self, Zip};
 
 /// CSS 길이 문자열("2.54cm", "12pt") → hwpunit(1/7200in). 퍼센트 등 상대 단위는 None.
+/// 부호를 살리는 길이 파서 — `fo:text-indent`는 내어쓰기에서 음수로 온다.
+/// `length`는 크기 전용이라 음수를 버리므로 그대로 쓸 수 없다.
+fn signed_length(s: &str) -> Option<i32> {
+    let t = s.trim();
+    let (neg, body) = match t.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, t),
+    };
+    let v = length(body)? as i32;
+    Some(if neg { -v } else { v })
+}
+
 fn length(s: &str) -> Option<u32> {
     let s = s.trim();
     let split = s.find(|c: char| c.is_ascii_alphabetic() || c == '%')?;
@@ -45,6 +57,8 @@ struct TextFmt {
     italic: Option<bool>,
     underline: Option<bool>,
     font: Option<String>,
+    /// style:text-position — 1 위첨자 · 2 아래첨자
+    vert_align: Option<u8>,
 }
 
 impl TextFmt {
@@ -67,6 +81,9 @@ impl TextFmt {
         if o.font.is_some() {
             self.font = o.font.clone();
         }
+        if o.vert_align.is_some() {
+            self.vert_align = o.vert_align;
+        }
     }
 }
 
@@ -75,6 +92,8 @@ struct StyleDef {
     parent: Option<String>,
     text: TextFmt,
     align: Option<u8>,
+    /// [왼쪽 들여쓰기, 첫 줄, 앞 여백, 뒤 여백] (hwpunit). 첫 줄은 음수 가능.
+    margins: [Option<i32>; 4],
     background: Option<[u8; 3]>,
     padding: [Option<u16>; 4],
     column_width: Option<u32>,
@@ -119,6 +138,14 @@ fn read_style(st: Xml) -> StyleDef {
         }
     }
 
+    let margins = [
+        pp.and_then(|n| attr(n, "margin-left")).and_then(signed_length),
+        pp.and_then(|n| attr(n, "text-indent")).and_then(signed_length),
+        pp.and_then(|n| attr(n, "margin-top")).and_then(signed_length),
+        pp.and_then(|n| attr(n, "margin-bottom"))
+            .and_then(signed_length),
+    ];
+
     StyleDef {
         parent: attr(st, "parent-style-name").map(str::to_string),
         text: TextFmt {
@@ -136,8 +163,24 @@ fn read_style(st: Xml) -> StyleDef {
             font: tp
                 .and_then(|n| attr(n, "font-name").or_else(|| attr(n, "font-family")))
                 .map(|f| f.trim_matches('\'').to_string()),
+            vert_align: tp.and_then(|n| attr(n, "text-position")).map(|v| {
+                // "super 58%" · "sub 58%" · "33% 58%" · "-33% 58%" 모두 온다
+                let first = v.split_whitespace().next().unwrap_or("");
+                if first.starts_with("super") {
+                    1
+                } else if first.starts_with("sub") {
+                    2
+                } else {
+                    match first.trim_end_matches('%').parse::<f64>() {
+                        Ok(p) if p > 0.0 => 1,
+                        Ok(p) if p < 0.0 => 2,
+                        _ => 0,
+                    }
+                }
+            }),
         },
         align,
+        margins,
         background: cp
             .and_then(|n| attr(n, "background-color"))
             .and_then(hex_rgb),
@@ -184,6 +227,11 @@ impl Styles {
         out.text.overlay(&def.text);
         if def.align.is_some() {
             out.align = def.align;
+        }
+        for (slot, v) in out.margins.iter_mut().zip(def.margins) {
+            if v.is_some() {
+                *slot = v;
+            }
         }
         if def.background.is_some() {
             out.background = def.background;
@@ -313,34 +361,48 @@ impl Ctx<'_, '_> {
         let mut fmt = self.styles.default_text.clone();
         fmt.overlay(&style.text);
 
+        let m = style.margins;
         let mut para = Paragraph {
-            shape_index: self.intern.para_shape(style.align.unwrap_or(0)),
+            shape_index: self.intern.para_shape_m(
+                style.align.unwrap_or(0),
+                ParaMargins {
+                    indent: m[0].unwrap_or(0),
+                    first_line: m[1].unwrap_or(0),
+                    space_before: m[2].unwrap_or(0),
+                    space_after: m[3].unwrap_or(0),
+                },
+            ),
             ..Default::default()
         };
-        self.inline(p, &fmt, &mut para);
+        self.inline(p, &fmt, &mut para, None);
         para
     }
 
     /// text:p 하위의 혼합 콘텐츠 — 텍스트 노드 + span/s/tab/line-break/frame
-    fn inline(&mut self, node: Xml, fmt: &TextFmt, para: &mut Paragraph) {
+    fn inline(&mut self, node: Xml, fmt: &TextFmt, para: &mut Paragraph, link: Option<&str>) {
         for c in node.children() {
             if c.is_text() {
-                self.push_text(c.text().unwrap_or(""), fmt, para);
+                self.push_text(c.text().unwrap_or(""), fmt, para, link);
                 continue;
             }
             match c.tag_name().name() {
                 "span" => {
                     let mut inner = fmt.clone();
                     inner.overlay(&self.styles.resolve(attr(c, "style-name"), 0).text);
-                    self.inline(c, &inner, para);
+                    self.inline(c, &inner, para, link);
                 }
-                "a" | "bookmark-ref" | "reference-ref" => self.inline(c, fmt, para),
+                "a" => {
+                    // text:a의 주소는 xlink:href
+                    let href = attr(c, "href").map(str::to_string);
+                    self.inline(c, fmt, para, href.as_deref().or(link));
+                }
+                "bookmark-ref" | "reference-ref" => self.inline(c, fmt, para, link),
                 "s" => {
                     let n: usize = attr(c, "c").and_then(|v| v.parse().ok()).unwrap_or(1);
-                    self.push_text(&" ".repeat(n.min(256)), fmt, para);
+                    self.push_text(&" ".repeat(n.min(256)), fmt, para, link);
                 }
-                "tab" => self.push_text("\t", fmt, para),
-                "line-break" => self.push_text("\n", fmt, para),
+                "tab" => self.push_text("\t", fmt, para, link),
+                "line-break" => self.push_text("\n", fmt, para, link),
                 "frame" => {
                     if let Some(img) = self.image(c) {
                         para.images.push(img);
@@ -355,21 +417,25 @@ impl Ctx<'_, '_> {
                     }
                 }
                 // 페이지 번호·날짜 같은 필드는 표시 문자열을 그대로 쓴다
-                _ => self.inline(c, fmt, para),
+                _ => self.inline(c, fmt, para, link),
             }
         }
     }
 
-    fn push_text(&mut self, text: &str, fmt: &TextFmt, para: &mut Paragraph) {
+    fn push_text(&mut self, text: &str, fmt: &TextFmt, para: &mut Paragraph, link: Option<&str>) {
         if text.is_empty() {
             return;
         }
         let shape = self.shape(fmt);
+        // 링크가 다르면 합치지 않는다 — 합치면 링크 경계가 사라진다
         match para.runs.last_mut() {
-            Some(last) if last.char_shape_id == shape => last.text.push_str(text),
+            Some(last) if last.char_shape_id == shape && last.link.as_deref() == link => {
+                last.text.push_str(text)
+            }
             _ => para.runs.push(Run {
                 char_shape_id: shape,
                 text: text.to_string(),
+                link: link.map(str::to_string),
             }),
         }
     }
@@ -386,6 +452,11 @@ impl Ctx<'_, '_> {
         }
         if fmt.underline == Some(true) {
             attr |= 1 << 2;
+        }
+        match fmt.vert_align {
+            Some(1) => attr |= ATTR_SUPER,
+            Some(2) => attr |= ATTR_SUB,
+            _ => {}
         }
         // 1/100pt와 hwpunit은 같은 크기라 length()의 결과를 그대로 쓴다. 기본 10pt.
         let base = fmt.size_hwp.filter(|v| *v > 0).unwrap_or(1000);

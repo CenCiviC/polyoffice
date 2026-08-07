@@ -1,7 +1,8 @@
 """서식 값을 정확히 아는 docx/odt 픽스처 생성 — 파서 회귀 테스트용.
 
 넣는 것: A4 페이지·여백, 가운데 정렬, 스타일 상속으로 받은 14pt,
-빨강 굵게, 기울임+밑줄, 열 병합(2), 행 병합(2), 셀 배경 #D9E2F3, 셀 폭.
+빨강 굵게, 기울임+밑줄, 열 병합(2), 행 병합(2), 셀 배경 #D9E2F3, 셀 폭,
+하이퍼링크(외부·앵커), 위/아래첨자, 들여쓰기·내어쓰기·문단 앞뒤 여백.
 """
 import zipfile, sys, os
 
@@ -20,6 +21,12 @@ DOCX_RELS = '''<?xml version="1.0" encoding="UTF-8"?>
 <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
 </Relationships>'''
 
+# 하이퍼링크는 TargetMode="External" 관계로만 주소를 갖는다
+DOCX_DOC_RELS = '''<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId10" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://www.mois.go.kr/manual" TargetMode="External"/>
+</Relationships>'''
+
 # Normal(색·글꼴) ← Body(14pt) 상속 체인을 만들어 basedOn 해석을 검증한다
 DOCX_STYLES = '''<?xml version="1.0" encoding="UTF-8"?>
 <w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
@@ -31,7 +38,7 @@ DOCX_STYLES = '''<?xml version="1.0" encoding="UTF-8"?>
 </w:styles>'''
 
 DOCX_DOC = '''<?xml version="1.0" encoding="UTF-8"?>
-<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
 <w:body>
   <w:p><w:pPr><w:pStyle w:val="Body"/></w:pPr>
     <w:r><w:t xml:space="preserve">상속받은 14pt 가운데</w:t></w:r></w:p>
@@ -42,6 +49,20 @@ DOCX_DOC = '''<?xml version="1.0" encoding="UTF-8"?>
       <w:t xml:space="preserve">기울임밑줄</w:t></w:r>
     <w:r><w:br/></w:r>
     <w:r><w:tab/><w:t xml:space="preserve">탭 뒤</w:t></w:r>
+  </w:p>
+  <w:p>
+    <w:pPr><w:ind w:left="400" w:firstLine="260"/><w:spacing w:before="100" w:after="60"/></w:pPr>
+    <w:hyperlink r:id="rId10"><w:r><w:t xml:space="preserve">링크된글자</w:t></w:r></w:hyperlink>
+    <w:r><w:t xml:space="preserve">보통글자</w:t></w:r>
+    <w:hyperlink w:anchor="b7"><w:r><w:t xml:space="preserve">앵커링크</w:t></w:r></w:hyperlink>
+  </w:p>
+  <w:p>
+    <w:pPr><w:ind w:left="600" w:hanging="300"/></w:pPr>
+    <w:r><w:t xml:space="preserve">면적 1,200m</w:t></w:r>
+    <w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:t>2</w:t></w:r>
+    <w:r><w:t xml:space="preserve"> 와 H</w:t></w:r>
+    <w:r><w:rPr><w:vertAlign w:val="subscript"/></w:rPr><w:t>2</w:t></w:r>
+    <w:r><w:t xml:space="preserve">O</w:t></w:r>
   </w:p>
   <w:tbl>
     <w:tblGrid><w:gridCol w:w="2880"/><w:gridCol w:w="2880"/></w:tblGrid>
@@ -91,7 +112,8 @@ ODT_CONTENT = '''<?xml version="1.0" encoding="UTF-8"?>
  xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0"
  xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
  xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0"
- xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0">
+ xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0"
+ xmlns:xlink="http://www.w3.org/1999/xlink">
 <office:automatic-styles>
   <style:style style:name="P1" style:family="paragraph" style:parent-style-name="Normal">
     <style:paragraph-properties fo:text-align="center"/>
@@ -100,6 +122,14 @@ ODT_CONTENT = '''<?xml version="1.0" encoding="UTF-8"?>
     <style:text-properties fo:font-weight="bold" fo:color="#C00000" fo:font-size="12pt"/></style:style>
   <style:style style:name="T2" style:family="text">
     <style:text-properties fo:font-style="italic" style:text-underline-style="solid"/></style:style>
+  <style:style style:name="P2" style:family="paragraph" style:parent-style-name="Normal">
+    <style:paragraph-properties fo:margin-left="20pt" fo:text-indent="13pt" fo:margin-top="5pt" fo:margin-bottom="3pt"/></style:style>
+  <style:style style:name="P3" style:family="paragraph" style:parent-style-name="Normal">
+    <style:paragraph-properties fo:margin-left="30pt" fo:text-indent="-15pt"/></style:style>
+  <style:style style:name="T3" style:family="text">
+    <style:text-properties style:text-position="super 58%"/></style:style>
+  <style:style style:name="T4" style:family="text">
+    <style:text-properties style:text-position="sub 58%"/></style:style>
   <style:style style:name="co1" style:family="table-column">
     <style:table-column-properties style:column-width="5.08cm"/></style:style>
   <style:style style:name="ce1" style:family="table-cell">
@@ -108,6 +138,8 @@ ODT_CONTENT = '''<?xml version="1.0" encoding="UTF-8"?>
 <office:body><office:text>
   <text:p text:style-name="P1">상속받은 14pt 가운데</text:p>
   <text:p text:style-name="Normal"><text:span text:style-name="T1">빨간 굵게 12pt</text:span><text:span text:style-name="T2">기울임밑줄</text:span><text:line-break/><text:tab/>탭 뒤</text:p>
+  <text:p text:style-name="P2"><text:a xlink:href="https://www.mois.go.kr/manual">링크된글자</text:a>보통글자</text:p>
+  <text:p text:style-name="P3">면적 1,200m<text:span text:style-name="T3">2</text:span> 와 H<text:span text:style-name="T4">2</text:span>O</text:p>
   <table:table table:name="T">
     <table:table-column table:style-name="co1" table:number-columns-repeated="2"/>
     <table:table-row>
@@ -149,6 +181,7 @@ write(os.path.join(OUT, 'sample.docx'), [
     ('_rels/.rels', DOCX_RELS),
     ('word/document.xml', DOCX_DOC),
     ('word/styles.xml', DOCX_STYLES),
+    ('word/_rels/document.xml.rels', DOCX_DOC_RELS),
 ])
 
 write(os.path.join(OUT, 'sample.odt'), [
