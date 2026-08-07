@@ -1,7 +1,7 @@
 {
   "name": "hwp-core",
   "type": "module",
-  "description": "HWP 5.x binary parser producing the hwp2html document-model JSON contract",
+  "description": "HWP 5.x binary parser producing the Narro document-model JSON contract",
   "version": "0.1.0",
   "license": "Apache-2.0",
   "files": [

@@ -10,7 +10,8 @@
 import { zipSync, strToU8 } from 'fflate'
 
 import type { IrBlock, IrCell, IrDoc, IrImage, IrPara, IrRun, IrStyle } from './ir-model'
-import { readIr, xmlSafe } from './ir-model'
+import { DEFAULT_LINE_HEIGHT, DOC_FONT, HEADING_SPACE, LINE_BREAK, readIr, xmlSafe } from './ir-model'
+import type { EmbeddedFont } from './font-embed'
 
 const esc = (s: string) =>
   xmlSafe(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
@@ -32,6 +33,7 @@ class OdtWriter {
   /** 스타일 XML → 이름 (같은 서식은 한 번만 등록) */
   private textStyles = new Map<string, string>()
   private paraStyles = new Map<string, string>()
+  private rowStyles = new Map<string, string>()
   private cellStyles = new Map<string, string>()
   private colStyles = new Map<string, string>()
   private frameStyle = false
@@ -73,18 +75,37 @@ class OdtWriter {
     return this.intern(this.textStyles, 'T', p.join(' '))
   }
 
-  paraStyle(align: string): string {
+  /**
+   * fo:line-height의 백분율은 구현마다 "글자 크기 기준"과 "자연 줄높이 기준"으로 갈린다.
+   * docx와 같은 이유로 여기서도 pt로 못박는다(style:line-height-at-least = 최소값이라 안 잘림).
+   */
+  paraStyle(align: string, maxPt: number, heading: number): string {
     const fo = align === 'justify' ? 'justify' : align === 'center' ? 'center' : align === 'right' ? 'end' : 'start'
-    return this.intern(this.paraStyles, 'P', `fo:text-align="${fo}"`)
+    const ratio = heading ? HEADING_SPACE.lineHeight : DEFAULT_LINE_HEIGHT
+    const space = heading
+      ? ` fo:margin-top="${pt(HEADING_SPACE.beforePt)}" fo:margin-bottom="${pt(HEADING_SPACE.afterPt)}"`
+      : ''
+    return this.intern(
+      this.paraStyles,
+      'P',
+      `fo:text-align="${fo}" style:line-height-at-least="${pt(maxPt * ratio)}"` +
+        ` style:snap-to-layout-grid="false" style:line-break="${LINE_BREAK}"${space}`,
+    )
   }
 
-  cellStyle(background: string | null): string {
+  cellStyle(background: string | null, padding: [number, number, number, number]): string {
     const bg = background ? ` fo:background-color="${background}"` : ''
+    const [t, r, b, l] = padding
     return this.intern(
       this.cellStyles,
       'ce',
-      `fo:padding="0.05in" fo:border="0.5pt solid #555555"${bg}`,
+      `fo:padding-top="${pt(t)}" fo:padding-right="${pt(r)}" fo:padding-bottom="${pt(b)}" ` +
+        `fo:padding-left="${pt(l)}" fo:border="0.75pt solid #555555" style:vertical-align="middle"${bg}`,
     )
+  }
+
+  rowStyle(minHeightPt: number): string {
+    return this.intern(this.rowStyles, 'ro', `style:min-row-height="${pt(minHeightPt)}"`)
   }
 
   colStyle(widthPt: number): string {
@@ -109,6 +130,11 @@ class OdtWriter {
       out.push(
         `<style:style style:name="${name}" style:family="paragraph" style:parent-style-name="Standard">` +
           `<style:paragraph-properties ${props}/></style:style>`,
+      )
+    }
+    for (const [props, name] of this.rowStyles) {
+      out.push(
+        `<style:style style:name="${name}" style:family="table-row"><style:table-row-properties ${props}/></style:style>`,
       )
     }
     for (const [props, name] of this.cellStyles) {
@@ -145,7 +171,8 @@ class OdtWriter {
   }
 
   paraXml(para: IrPara): string {
-    const style = this.paraStyle(para.align)
+    const maxPt = para.runs.reduce((m, r) => Math.max(m, r.sizePt), 0) || 10
+    const style = this.paraStyle(para.align, maxPt, para.heading)
     const runs = para.runs.map((r) => this.runXml(r)).join('')
     const imgs = para.images
       .map((im) => {
@@ -186,7 +213,7 @@ class OdtWriter {
           (cell.rowSpan > 1 ? ` table:number-rows-spanned="${cell.rowSpan}"` : '')
         const inner = this.blocksXml(cell.blocks, seq) || '<text:p/>'
         cells.push(
-          `<table:table-cell table:style-name="${this.cellStyle(cell.background)}"${span} office:value-type="string">${inner}</table:table-cell>`,
+          `<table:table-cell table:style-name="${this.cellStyle(cell.background, cell.paddingPt)}"${span} office:value-type="string">${inner}</table:table-cell>`,
         )
         // 가로 병합에 먹힌 칸도 자리를 채워 줘야 열이 맞는다
         for (let k = 1; k < cell.colSpan; k++) cells.push('<table:covered-table-cell/>')
@@ -196,7 +223,9 @@ class OdtWriter {
         cells.push('<table:covered-table-cell/>')
         c++
       }
-      trs.push(`<table:table-row>${cells.join('')}</table:table-row>`)
+      const hPt = row.reduce((m, cell) => (cell.rowSpan > 1 ? m : Math.max(m, cell.heightPt)), 0)
+      const rowStyle = hPt > 0 ? ` table:style-name="${this.rowStyle(hPt)}"` : ''
+      trs.push(`<table:table-row${rowStyle}>${cells.join('')}</table:table-row>`)
     })
 
     seq.n++
@@ -225,7 +254,7 @@ export interface OdtResult {
 }
 
 /** IR HTML의 body → odt 바이트 */
-export function html2odt(root: Element): OdtResult {
+export function html2odt(root: Element, embed?: EmbeddedFont): OdtResult {
   const doc: IrDoc = readIr(root)
   const w = new OdtWriter()
   const seq = { n: 0 }
@@ -240,8 +269,9 @@ export function html2odt(root: Element): OdtResult {
 
   const styles = `<?xml version="1.0" encoding="UTF-8"?>
 <office:document-styles ${NS} office:version="1.3">
+${embed ? `<office:font-face-decls><style:font-face style:name="${embed.family}" svg:font-family="&apos;${embed.family}&apos;" style:font-family-generic="swiss" style:font-pitch="variable"><svg:font-face-src><svg:font-face-uri xlink:href="Fonts/regular.ttf" xlink:type="simple" xlink:actuate="onRequest"><svg:font-face-format svg:string="truetype"/></svg:font-face-uri></svg:font-face-src></style:font-face></office:font-face-decls>` : ''}
 <office:styles>
-<style:default-style style:family="paragraph"><style:text-properties fo:font-size="10pt" style:font-size-asian="10pt" style:font-size-complex="10pt"/></style:default-style>
+<style:default-style style:family="paragraph"><style:paragraph-properties style:line-height-at-least="${pt(10 * DEFAULT_LINE_HEIGHT)}" fo:margin-top="0pt" fo:margin-bottom="0pt" style:text-autospace="none"/><style:text-properties style:font-name="${DOC_FONT}" fo:font-size="10pt" style:font-size-asian="10pt" style:font-size-complex="10pt"/></style:default-style>
 <style:style style:name="Standard" style:family="paragraph"/>
 </office:styles>
 <office:automatic-styles>
@@ -261,7 +291,7 @@ export function html2odt(root: Element): OdtResult {
 <manifest:file-entry manifest:full-path="/" manifest:version="1.3" manifest:media-type="application/vnd.oasis.opendocument.text"/>
 <manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"/>
 <manifest:file-entry manifest:full-path="styles.xml" manifest:media-type="text/xml"/>
-${w.pictures.map((p) => `<manifest:file-entry manifest:full-path="${p.name}" manifest:media-type="image/${p.name.split('.').pop() === 'jpg' ? 'jpeg' : p.name.split('.').pop()}"/>`).join('')}
+${w.pictures.map((p) => `<manifest:file-entry manifest:full-path="${p.name}" manifest:media-type="image/${p.name.split('.').pop() === 'jpg' ? 'jpeg' : p.name.split('.').pop()}"/>`).join('')}${embed ? '<manifest:file-entry manifest:full-path="Fonts/regular.ttf" manifest:media-type="application/x-font-ttf"/>' + (embed.bold ? '<manifest:file-entry manifest:full-path="Fonts/bold.ttf" manifest:media-type="application/x-font-ttf"/>' : '') : ''}
 </manifest:manifest>`
 
   // mimetype은 첫 항목 + 무압축이어야 한다 (ODF 패키지 규칙)
@@ -272,6 +302,10 @@ ${w.pictures.map((p) => `<manifest:file-entry manifest:full-path="${p.name}" man
     'styles.xml': [strToU8(styles), { level: 6 }],
   }
   for (const p of w.pictures) files[p.name] = [p.bytes, { level: 6 }]
+  if (embed) {
+    files['Fonts/regular.ttf'] = [embed.regular, { level: 6 }]
+    if (embed.bold) files['Fonts/bold.ttf'] = [embed.bold, { level: 6 }]
+  }
 
   const count = (re: RegExp) => (content.match(re) ?? []).length
   return {

@@ -1,13 +1,13 @@
 ---
-name: hwp2html-design-system
+name: narro-design-system
 description: >
-  hwp2html 디자인 시스템 — 이 프로젝트의 모든 UI(앱바, 서식 툴바, 캔버스, 빈 상태, 버튼,
+  Narro 디자인 시스템 — 이 프로젝트의 모든 UI(앱바, 서식 툴바, 캔버스, 빈 상태, 버튼,
   입력, 배지 등)를 만들거나 고칠 때의 단일 진실원. DearDent EMR 디자인 시스템("고요한 정밀함
   / Quiet Precision, Linear-refined")을 이식한 것. 아이덴티티 키워드, Hard Laws, 색/타이포/
   간격 토큰, role→token 해석 레이어를 담는다. UI용 CSS를 쓰기 전에 반드시 먼저 읽는다.
 ---
 
-# hwp2html Design System
+# Narro Design System
 
 **개념: 고요한 정밀함 / Quiet Precision, Linear-refined** — "UI가 아니라 문서를 보게 한다."
 크롬은 뒤로 물러나고 문서 콘텐츠가 주인공. 조용함은 **타이포그래피로** 만들지,

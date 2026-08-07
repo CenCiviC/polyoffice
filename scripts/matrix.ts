@@ -11,7 +11,7 @@ import { Window } from 'happy-dom'
 import { html2hwpx } from '../src/lib/html2hwpx'
 import { html2docx } from '../src/lib/html2docx'
 import { html2odt } from '../src/lib/html2odt'
-import { convertModel } from '../src/lib/hwp2html'
+import { convertModel } from '../src/lib/narro'
 import { initHwpWasm, parseHwpWasm } from '../src/lib/parser-wasm'
 import type { DocModel, ParagraphModel } from '../src/lib/model'
 

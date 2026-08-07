@@ -1,4 +1,4 @@
-//! HWPX(OWPML, KS X 6101) 파싱 — zip 안의 XML을 hwp2html 문서 모델로 매핑한다.
+//! HWPX(OWPML, KS X 6101) 파싱 — zip 안의 XML을 Narro 문서 모델로 매핑한다.
 //! .hwp(parse.rs)와 같은 DocModel JSON 계약을 채우므로 방출기(TS)는 포맷을 구분하지 않는다.
 //!
 //! OWPML의 ID 참조(charPrIDRef 등)는 임의 문자열 id라서, 등장 순서대로 배열에 넣고

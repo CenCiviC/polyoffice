@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { convertHWP, convertModel, wrapStandalone, type ConvertResult } from './lib/hwp2html'
+import { convertHWP, convertModel, wrapStandalone, type ConvertResult } from './lib/narro'
 import { html2hwpx } from './lib/html2hwpx'
 import { html2docx } from './lib/html2docx'
 import { html2odt } from './lib/html2odt'
+import { detectFonts, FONT_CANDIDATES, isSafeForExport } from './lib/fonts'
 import { normalizeIR } from './lib/ir'
+import { paginateKeepingCaret, unpaginate } from './lib/paginate'
 import { initHwpWasm, parseHwpWasm } from './lib/parser-wasm'
 import wasmUrl from '../rust/hwp-core/pkg/hwp_core_bg.wasm?url'
 
@@ -11,7 +13,6 @@ type Tab = 'preview' | 'source'
 type ViewMode = 'single' | 'two'
 
 const FONT_SIZES = ['8', '9', '10', '11', '12', '14', '16', '20', '24', '32']
-const FONT_FAMILIES = ['함초롬바탕', '함초롬돋움', '맑은 고딕', '바탕', '돋움', '굴림', '궁서', 'Noto Sans KR']
 
 const Icon = {
   undo: (
@@ -119,6 +120,17 @@ const Icon = {
 
 const clampZoom = (z: number) => Math.min(200, Math.max(50, z))
 
+// 두 페이지 보기 배율 계산용 — 편집기 body.two-up의 gap/padding과 값을 맞춘다
+const TWO_UP_GAP = 20
+const TWO_UP_PAD = 12
+const SCROLLBAR = 16
+
+/** 선택 지점이 없을 때 블록을 떨굴 곳 — 첫 장이 아니라 마지막 장 끝 */
+const lastPage = (doc: Document): Element | null => {
+  const pages = doc.querySelectorAll('doc-section')
+  return pages.length ? pages[pages.length - 1] : null
+}
+
 /** 외부 붙여넣기 HTML → IR 인라인 어휘로 세탁 (블록 경계는 <br>로 평탄화) */
 function sanitizePastedHtml(html: string): string {
   const dom = new DOMParser().parseFromString(html, 'text/html')
@@ -179,19 +191,32 @@ export default function App() {
   const [zoom, setZoom] = useState(100)
   const [viewMode, setViewMode] = useState<ViewMode>('single')
   const [counts, setCounts] = useState({ pages: 0, chars: 0, charsNoSpace: 0 })
+  const [page, setPage] = useState(1) // 지금 보고 있는 페이지 (1-based)
+  const [pageHint, setPageHint] = useState(false) // 스크롤 중 잠깐 뜨는 페이지 표시
   const [findOpen, setFindOpen] = useState(false)
   const [findQuery, setFindQuery] = useState('')
   const [replaceQuery, setReplaceQuery] = useState('')
   const [findTotal, setFindTotal] = useState(0)
   const [findIndex, setFindIndex] = useState(0) // 0-based, 표시할 땐 +1
+  // 이 기기에 실제로 설치된 글꼴만 고를 수 있게 한다 — 없는 글꼴을 고르면 화면에선 대체되고
+  // docx·hwpx로 저장했을 때 받는 쪽에서 또 다른 글꼴로 대체돼 조판이 어긋난다.
+  const [fonts, setFonts] = useState<string[]>([])
   const inputRef = useRef<HTMLInputElement>(null)
   const imageInputRef = useRef<HTMLInputElement>(null)
   const previewRef = useRef<HTMLIFrameElement>(null)
   const findInputRef = useRef<HTMLInputElement>(null)
   const matchesRef = useRef<Range[]>([])
+  const hintTimerRef = useRef<number | undefined>(undefined)
+  const paginateTimerRef = useRef<number | undefined>(undefined)
+  const afterPaginateRef = useRef<() => void>(() => {})
+  const zoomBeforeTwoUpRef = useRef<{ from: number; to: number } | null>(null)
 
   const editorDoc = () => previewRef.current?.contentDocument ?? null
   const editorWin = () => previewRef.current?.contentWindow as (Window & typeof globalThis) | null
+
+  useEffect(() => {
+    setFonts(detectFonts(FONT_CANDIDATES))
+  }, [])
 
   // ── 파일 열기 ──────────────────────────────────────────────
   const handleFile = useCallback(async (file: File) => {
@@ -237,6 +262,23 @@ export default function App() {
     [handleFile],
   )
 
+  // ?doc=<url> — 링크 하나로 편집기에 문서를 띄운다 (드래그&드롭 없이).
+  // 다른 오리진의 URL이면 그쪽 서버가 CORS를 허용해야 한다.
+  useEffect(() => {
+    const src = new URLSearchParams(window.location.search).get('doc')
+    if (!src) return
+    void (async () => {
+      try {
+        const res = await fetch(src)
+        if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+        const name = decodeURIComponent(src.split('?')[0].split('/').pop() || 'document.hwpx')
+        await handleFile(new File([await res.blob()], name))
+      } catch (e) {
+        setError(`문서를 불러오지 못했습니다 (${src}): ${e instanceof Error ? e.message : String(e)}`)
+      }
+    })()
+  }, [handleFile])
+
   // ── 보기(확대/축소·페이지 모드) ────────────────────────────
   const applyView = useCallback(() => {
     const doc = editorDoc()
@@ -249,7 +291,38 @@ export default function App() {
     applyView()
   }, [applyView, previewKey])
 
-  const recount = useCallback(() => {
+  // 두 페이지 나란히: A4 두 장은 100%에서 창보다 넓다 — 창 폭에 맞는 배율을 계산해서
+  // 실제로 나란히 보이게 한다. 맞출 수 없으면 null(배율 유지).
+  const fitTwoUpZoom = useCallback(() => {
+    const doc = editorDoc()
+    const frame = previewRef.current
+    const page = doc?.querySelector('doc-section')
+    if (!frame || !page) return null
+    const w = page.getBoundingClientRect().width // 현재 배율에서 보이는 폭
+    if (!w) return null
+    const avail = frame.clientWidth - TWO_UP_GAP - TWO_UP_PAD * 2 - SCROLLBAR
+    const fit = (zoom * (avail / 2)) / w
+    return clampZoom(Math.floor(fit / 5) * 5) // 5% 단위로 내림
+  }, [zoom])
+
+  const showTwoUp = useCallback(() => {
+    const fit = fitTwoUpZoom()
+    setViewMode('two')
+    if (fit !== null && fit < zoom) {
+      zoomBeforeTwoUpRef.current = { from: zoom, to: fit }
+      setZoom(fit)
+    }
+  }, [fitTwoUpZoom, zoom])
+
+  const showSingle = useCallback(() => {
+    setViewMode('single')
+    // 두 장 맞추려고 우리가 줄인 배율이면 되돌린다 (사용자가 직접 바꿨으면 그대로 둔다)
+    const prev = zoomBeforeTwoUpRef.current
+    if (prev && prev.to === zoom) setZoom(prev.from)
+    zoomBeforeTwoUpRef.current = null
+  }, [zoom])
+
+  const applyCounts = useCallback(() => {
     const doc = editorDoc()
     if (!doc?.body) return
     const text = doc.body.textContent ?? ''
@@ -258,6 +331,44 @@ export default function App() {
       chars: text.replace(/\n/g, '').length,
       charsNoSpace: text.replace(/\s/g, '').length,
     })
+  }, [])
+
+  /** 용지 높이에 맞춰 페이지를 다시 나눈다 (페이지 수는 그 결과에서 나온다) */
+  const repaginate = useCallback(() => {
+    const doc = editorDoc()
+    if (!doc?.body) return
+    paginateKeepingCaret(doc)
+    applyCounts()
+    afterPaginateRef.current() // 페이지가 갈리며 노드가 옮겨졌으니 찾기 하이라이트는 다시 잡는다
+  }, [applyCounts])
+
+  // 타자 칠 때마다 다시 나누면 무거우니 입력이 멎은 뒤에 한 번
+  const schedulePaginate = useCallback(() => {
+    window.clearTimeout(paginateTimerRef.current)
+    paginateTimerRef.current = window.setTimeout(repaginate, 400)
+  }, [repaginate])
+
+  const recount = useCallback(() => {
+    applyCounts()
+    schedulePaginate()
+  }, [applyCounts, schedulePaginate])
+
+  // 스크롤 위치 → 지금 보고 있는 페이지. 뷰포트 위쪽 30% 선에 걸친 페이지를 "현재"로 본다.
+  const trackPage = useCallback(() => {
+    const doc = editorDoc()
+    const win = editorWin()
+    if (!doc || !win) return
+    const sections = doc.querySelectorAll('doc-section')
+    if (!sections.length) return
+    const mark = win.innerHeight * 0.3
+    let cur = 1
+    sections.forEach((s, i) => {
+      if (s.getBoundingClientRect().top <= mark) cur = i + 1
+    })
+    setPage(cur)
+    setPageHint(true)
+    window.clearTimeout(hintTimerRef.current)
+    hintTimerRef.current = window.setTimeout(() => setPageHint(false), 900)
   }, [])
 
   // ── 찾기/바꾸기 ────────────────────────────────────────────
@@ -270,7 +381,7 @@ export default function App() {
     setFindIndex(0)
   }, [])
 
-  const highlightCurrent = useCallback((ranges: Range[], idx: number) => {
+  const highlightCurrent = useCallback((ranges: Range[], idx: number, scroll = true) => {
     const win = editorWin() as (Window & {
       CSS?: { highlights?: Map<string, unknown> }
       Highlight?: new (...r: Range[]) => unknown
@@ -280,13 +391,12 @@ export default function App() {
     const cur = ranges[idx]
     if (cur) {
       win.CSS.highlights.set('hwp-find-current', new win.Highlight(cur))
-      const el = cur.startContainer.parentElement
-      el?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+      if (scroll) cur.startContainer.parentElement?.scrollIntoView({ block: 'center', behavior: 'smooth' })
     }
   }, [])
 
   const runFind = useCallback(
-    (query: string, keepIndex = false) => {
+    (query: string, keepIndex = false, scroll = true) => {
       const doc = editorDoc()
       if (!doc || !query) {
         clearFind()
@@ -311,10 +421,17 @@ export default function App() {
       setFindTotal(ranges.length)
       const idx = keepIndex ? Math.min(findIndex, Math.max(0, ranges.length - 1)) : 0
       setFindIndex(idx)
-      highlightCurrent(ranges, idx)
+      highlightCurrent(ranges, idx, scroll)
     },
     [clearFind, findIndex, highlightCurrent],
   )
+
+  // 페이지를 다시 나눈 뒤 찾기 결과 되살리기 — 화면은 그대로 두고 하이라이트만 다시 잡는다
+  useEffect(() => {
+    afterPaginateRef.current = () => {
+      if (findQuery) runFind(findQuery, true, false)
+    }
+  }, [findQuery, runFind])
 
   const stepFind = useCallback(
     (delta: number) => {
@@ -377,13 +494,16 @@ export default function App() {
     style.textContent = `
       [contenteditable]:hover { outline: 1px dashed rgba(94, 106, 210, .4); outline-offset: 1px; }
       [contenteditable]:focus { outline: 2px solid rgba(94, 106, 210, .65); outline-offset: 1px; }
-      body.two-up { display: flex; flex-wrap: wrap; justify-content: center; align-items: flex-start;
-        gap: 20px; padding: 20px 12px; }
+      /* 정확히 2열 — flex-wrap이면 폭이 모자랄 때 조용히 1열로 되돌아간다 (배율은 fitTwoUpZoom이 맞춘다) */
+      body.two-up { display: grid; grid-template-columns: repeat(2, max-content);
+        justify-content: center; align-items: start; gap: 20px; padding: 20px 12px; }
       body.two-up doc-section.hwp-page { margin: 0 !important; }
       ::highlight(hwp-find) { background: #ffe58a; color: #1a1a1a; }
       ::highlight(hwp-find-current) { background: #f0a020; color: #101010; }
     `
     doc.head.appendChild(style)
+    setPage(1)
+    doc.defaultView?.addEventListener('scroll', trackPage, { passive: true })
     doc.body.addEventListener('input', () => {
       setEdited(true)
       recount()
@@ -427,9 +547,9 @@ export default function App() {
         openFind()
       }
     })
+    repaginate() // 문서를 열자마자 용지 높이대로 나눈다
     applyView()
-    recount()
-  }, [makeEditable, applyView, recount, openFind])
+  }, [makeEditable, applyView, repaginate, recount, openFind, trackPage])
 
   // ── 서식 명령 ──────────────────────────────────────────────
   const exec = useCallback(
@@ -528,7 +648,7 @@ export default function App() {
       } else {
         const p = doc.createElement('p')
         p.innerHTML = imgHtml
-        doc.querySelector('doc-section')?.appendChild(p)
+        lastPage(doc)?.appendChild(p)
         makeEditable(doc)
       }
       setEdited(true)
@@ -544,7 +664,7 @@ export default function App() {
     if (!doc) return
     const brk = doc.createElement('doc-pagebreak')
     if (block && block.closest('doc-section') && block.tagName !== 'LI') block.after(brk)
-    else doc.querySelector('doc-section')?.appendChild(brk)
+    else lastPage(doc)?.appendChild(brk)
     setEdited(true)
   }, [])
 
@@ -716,7 +836,7 @@ export default function App() {
     const n = doc.getSelection()?.anchorNode
     const anchor = (n && (n.nodeType === 1 ? (n as Element) : n.parentElement))?.closest('p')
     if (anchor && anchor.closest('doc-section')) anchor.after(table)
-    else doc.querySelector('doc-section')?.appendChild(table)
+    else lastPage(doc)?.appendChild(table)
 
     makeEditable(doc)
     setEdited(true)
@@ -730,6 +850,7 @@ export default function App() {
     const clone = doc.body.cloneNode(true) as HTMLElement
     clone.classList.remove('two-up')
     clone.style.removeProperty('zoom')
+    unpaginate(clone) // 미리보기용으로 나눈 페이지는 원래 섹션으로 되돌린 뒤 내보낸다
     normalizeIR(clone)
     return clone.innerHTML
   }, [result])
@@ -832,7 +953,7 @@ export default function App() {
       <header className="appbar">
         <span className="brand">
           <img src="/icons/narro-logo-48.png" alt="" />
-          hwp<span className="arrow">→</span>html
+          Narro
         </span>
         <span className="docname">
           {fileName || '문서를 열어주세요'}
@@ -932,11 +1053,16 @@ export default function App() {
               <option value="" disabled>
                 서체
               </option>
-              {FONT_FAMILIES.map((f) => (
-                <option key={f} value={f}>
-                  {f}
+              {fonts.map((f) => (
+                <option key={f} value={f} style={{ fontFamily: f }}>
+                  {isSafeForExport(f) ? f : `${f} (이 기기에만)`}
                 </option>
               ))}
+              {fonts.length === 0 && (
+                <option value="" disabled>
+                  사용 가능한 글꼴 없음
+                </option>
+              )}
             </select>
             <select
               title="글자 크기"
@@ -1172,25 +1298,28 @@ export default function App() {
             <code>{result.standalone}</code>
           </pre>
         )}
+
+        {/* 스크롤 중에만 뜨는 페이지 표시 */}
+        {result && tab === 'preview' && counts.pages > 1 && (
+          <div className={`page-hint${pageHint ? ' on' : ''}`} aria-hidden="true">
+            {page} / {counts.pages}
+          </div>
+        )}
       </main>
 
       {result && tab === 'preview' && (
         <footer className="statusbar">
-          <span>페이지 {counts.pages}</span>
+          <span>
+            페이지 {page} <em>/ {counts.pages}</em>
+          </span>
           <span>
             글자 {counts.chars.toLocaleString()} <em>(공백 제외 {counts.charsNoSpace.toLocaleString()})</em>
           </span>
-          {result.stats.images > 0 && <span>이미지 {result.stats.images}</span>}
-          <span>파서 {result.stats.parser === 'wasm' ? 'Rust/WASM' : 'hwp.js'}</span>
           <div className="status-right">
-            <button
-              className={viewMode === 'single' ? 'on' : ''}
-              title="한 페이지 보기"
-              onClick={() => setViewMode('single')}
-            >
+            <button className={viewMode === 'single' ? 'on' : ''} title="한 페이지 보기" onClick={showSingle}>
               {Icon.pageSingle}
             </button>
-            <button className={viewMode === 'two' ? 'on' : ''} title="두 페이지 나란히" onClick={() => setViewMode('two')}>
+            <button className={viewMode === 'two' ? 'on' : ''} title="두 페이지 나란히" onClick={showTwoUp}>
               {Icon.pageTwo}
             </button>
             <span className="status-sep" />

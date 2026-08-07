@@ -1,6 +1,6 @@
 /* ═══════════════════════════════════════════════════════════════
-   hwp2html Design System — 구현체
-   진실원: .claude/skills/hwp2html-design-system/SKILL.md (항상 동기화)
+   Narro Design System — 구현체
+   진실원: .claude/skills/narro-design-system/SKILL.md (항상 동기화)
    3-tier: Primitives → Semantic aliases → Components
    ═══════════════════════════════════════════════════════════════ */
 
@@ -50,6 +50,7 @@
   --focus-ring: 0 0 0 3px rgb(94 106 210 / 0.32);
   --shadow-sm: 0 1px 2px rgb(16 24 40 / 0.05);
   --shadow-page: 0 1px 3px 1px rgb(16 24 40 / 0.12);
+  --shadow-float: 0 4px 12px rgb(16 24 40 / 0.12); /* elevation md — 팝오버/토스트/플로팅 */
 }
 
 * {
@@ -113,12 +114,6 @@ button {
   width: 22px;
   height: 22px;
   display: block;
-}
-
-.brand .arrow {
-  color: var(--ink-muted);
-  font-weight: 500;
-  margin: 0 1px;
 }
 
 .docname {
@@ -505,6 +500,36 @@ button {
   height: 100%;
   border: none;
   background: var(--bg);
+}
+
+/* 스크롤 중 페이지 표시 — 스크롤바 옆에 잠깐 떴다 사라진다 */
+.page-hint {
+  position: absolute;
+  top: 50%;
+  right: 20px;
+  transform: translateY(-50%);
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow-float);
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 500; /* ts-caption */
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--dur-base) var(--ease-out);
+}
+
+.page-hint.on {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .page-hint {
+    transition: none;
+  }
 }
 
 /* 빈 상태 — flat, 박스 금지 (Law 7). 위계는 타이포로. */

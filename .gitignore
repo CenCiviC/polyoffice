@@ -23,7 +23,7 @@ dist-ssr
 *.sln
 *.sw?
 
-# hwp2html
+# narro
 rust/hwp-core/target/
 out.html
 *.roundtrip.hwpx

@@ -10,7 +10,11 @@
 import { zipSync, strToU8 } from 'fflate'
 
 import type { IrBlock, IrCell, IrDoc, IrImage, IrPara, IrRun } from './ir-model'
-import { readIr, xmlSafe } from './ir-model'
+import { DEFAULT_LINE_HEIGHT, DOC_FONT, HEADING_SPACE, LINE_BREAK, readIr, xmlSafe } from './ir-model'
+import { fontKeyFor, obfuscateFont, type EmbeddedFont } from './font-embed'
+
+/** 뷰어 CSS의 기본 글꼴 대체 사슬(Apple SD Gothic Neo → Malgun Gothic)에서 Word가 쓸 수 있는 것 */
+const DEFAULT_FONT = DOC_FONT
 
 const esc = (s: string) =>
   xmlSafe(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
@@ -18,18 +22,50 @@ const esc = (s: string) =>
 const twip = (pt: number) => Math.max(0, Math.round(pt * 20))
 const emu = (pt: number) => Math.max(0, Math.round(pt * 12700))
 
-const CONTENT_TYPES = (exts: string[]) => `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+const CONTENT_TYPES = (exts: string[], embedded: boolean) => `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
 <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
 <Default Extension="xml" ContentType="application/xml"/>
 ${exts.map((e) => `<Default Extension="${e}" ContentType="image/${e === 'jpg' ? 'jpeg' : e}"/>`).join('')}
 <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
-</Types>`
+<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
+<Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/>${
+  embedded ? '<Default Extension="odttf" ContentType="application/vnd.openxmlformats-officedocument.obfuscatedFont"/>' +
+             '<Override PartName="/word/fontTable.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.fontTable+xml"/>' : ''
+}</Types>`
 
 const ROOT_RELS = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
 <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
 </Relationships>`
+
+/**
+ * styles.xml이 없으면 Word는 자기 내장 Normal 기본값(문단 뒤 8pt, 줄간격 1.08)을 쓴다.
+ * hwpx 템플릿·ODF 기본값에는 그런 여백이 없어서 docx만 페이지 수가 늘어났다.
+ * 뷰어 BASE_CSS(line-height 1.6, p margin 0)를 기준으로 기본값을 명시해 셋을 맞춘다.
+ */
+/** 문단 줄간격·앞뒤 여백 — CSS line-height와 같은 의미(글자 크기 × 배수)를 pt로 못박는다 */
+const lineSpacingXml = (maxPt: number, heading = false) => {
+  const ratio = heading ? HEADING_SPACE.lineHeight : DEFAULT_LINE_HEIGHT
+  const before = heading ? Math.round(HEADING_SPACE.beforePt * 20) : 0
+  const after = heading ? Math.round(HEADING_SPACE.afterPt * 20) : 0
+  return `<w:spacing w:before="${before}" w:after="${after}" w:line="${Math.round(maxPt * ratio * 20)}" w:lineRule="atLeast"/>`
+}
+
+const STYLES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:docDefaults>
+<w:rPrDefault><w:rPr><w:rFonts w:ascii="${DEFAULT_FONT}" w:hAnsi="${DEFAULT_FONT}" w:eastAsia="${DEFAULT_FONT}" w:cs="${DEFAULT_FONT}"/><w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr></w:rPrDefault>
+<w:pPrDefault><w:pPr><w:kinsoku w:val="${LINE_BREAK === 'strict' ? 1 : 0}"/><w:autoSpaceDE w:val="0"/><w:autoSpaceDN w:val="0"/><w:snapToGrid w:val="0"/>${lineSpacingXml(10)}</w:pPr></w:pPrDefault>
+</w:docDefaults>
+<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/></w:style>
+</w:styles>`
+
+/** 임베드한 글꼴을 실제로 쓰게 하는 선언 — 없으면 Word가 무시할 수 있다 */
+const SETTINGS = (embedded: boolean) => `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">${
+  embedded ? '<w:embedTrueTypeFonts/><w:saveSubsetFonts/>' : ''
+}</w:settings>`
 
 const NS = [
   'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"',
@@ -64,9 +100,17 @@ class DocxWriter {
     return [...new Set(this.media.map((m) => m.name.split('.').pop() as string))]
   }
 
-  documentRels() {
+  documentRels(embedded = false) {
+    // 그림 관계는 rId100부터라 부품 관계는 rId1~은 자유롭게 쓴다
+    const R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+    const parts = [
+      `<Relationship Id="rId1" Type="${R}/styles" Target="styles.xml"/>`,
+      `<Relationship Id="rId4" Type="${R}/settings" Target="settings.xml"/>`,
+    ]
+    // 글꼴 파트는 fontTable.xml의 관계다 — document.xml.rels가 아니라 fontTable.xml.rels에 들어간다
+    if (embedded) parts.push(`<Relationship Id="rId5" Type="${R}/fontTable" Target="fontTable.xml"/>`)
     return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${this.rels.join('')}</Relationships>`
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${parts.join('')}${this.rels.join('')}</Relationships>`
   }
 
   runXml(run: IrRun): string {
@@ -118,7 +162,13 @@ class DocxWriter {
 
   paraXml(para: IrPara, seq: { n: number }): string {
     const jc = JC[para.align]
-    const pPr = jc && jc !== 'left' ? `<w:pPr><w:jc w:val="${jc}"/></w:pPr>` : ''
+    // OOXML의 lineRule="auto"는 "글꼴의 자연 줄높이 × 배수"라서, CSS line-height(글자 크기 × 배수)
+    // 보다 30%쯤 커진다(맑은 고딕 기준 자연 줄높이 ≈ 1.33em). 브라우저와 같게 보이려면
+    // 문단에서 가장 큰 글자 크기를 재서 pt로 못박는다. 그림·큰 글자가 잘리지 않게 atLeast.
+    const maxPt = para.runs.reduce((m, r) => Math.max(m, r.sizePt), 0) || 10
+    const parts = [lineSpacingXml(maxPt, para.heading > 0)]
+    if (jc && jc !== 'left') parts.push(`<w:jc w:val="${jc}"/>`)
+    const pPr = `<w:pPr>${parts.join('')}</w:pPr>`
     const runs = para.runs.map((r) => this.runXml(r)).join('')
     const imgs = para.images.map((im) => this.imageXml(im, ++seq.n)).join('')
     return `<w:p>${pPr}${runs}${imgs}</w:p>`
@@ -128,7 +178,8 @@ class DocxWriter {
     const grid = colWidthsPt.map((w) => `<w:gridCol w:w="${twip(w)}"/>`).join('')
     const total = twip(colWidthsPt.reduce((a, b) => a + b, 0))
     const borders = ['top', 'left', 'bottom', 'right', 'insideH', 'insideV']
-      .map((s) => `<w:${s} w:val="single" w:sz="4" w:space="0" w:color="555555"/>`)
+      // 뷰어 CSS는 1px solid #555 — sz는 1/8pt 단위라 6 = 0.75pt ≈ 1px
+      .map((s) => `<w:${s} w:val="single" w:sz="6" w:space="0" w:color="555555"/>`)
       .join('')
 
     // 세로 병합에 먹힌 자리에도 셀이 있어야 Word가 격자를 맞춘다
@@ -148,9 +199,18 @@ class DocxWriter {
         const pr: string[] = [
           `<w:tcW w:type="dxa" w:w="${twip(cell.widthPt || colWidthsPt.slice(c, c + cell.colSpan).reduce((a, b) => a + (b || 0), 0) || 60)}"/>`,
         ]
+        // CT_TcPr 순서 고정: tcW → gridSpan → vMerge → shd → tcMar → vAlign
         if (cell.colSpan > 1) pr.push(`<w:gridSpan w:val="${cell.colSpan}"/>`)
         if (cell.rowSpan > 1) pr.push('<w:vMerge w:val="restart"/>')
         if (cell.background) pr.push(`<w:shd w:val="clear" w:color="auto" w:fill="${cell.background.slice(1)}"/>`)
+        // tcMar를 안 쓰면 Word가 자기 기본 셀 여백(좌우 0.08in)을 넣는다 — 0이어도 명시한다
+        const [mt, mr, mb, ml] = cell.paddingPt
+        pr.push(
+          `<w:tcMar><w:top w:type="dxa" w:w="${twip(mt)}"/><w:left w:type="dxa" w:w="${twip(ml)}"/>` +
+            `<w:bottom w:type="dxa" w:w="${twip(mb)}"/><w:right w:type="dxa" w:w="${twip(mr)}"/></w:tcMar>`,
+        )
+        // 뷰어 CSS는 td { vertical-align: middle } — Word 기본은 위 정렬이라 명시한다
+        pr.push('<w:vAlign w:val="center"/>')
         const inner = this.blocksXml(cell.blocks, seq) || '<w:p/>'
         tcs.push(`<w:tc><w:tcPr>${pr.join('')}</w:tcPr>${inner}</w:tc>`)
         c += cell.colSpan
@@ -159,7 +219,10 @@ class DocxWriter {
         tcs.push(vMergeContinueCell(colWidthsPt[c] ?? 60))
         c++
       }
-      trs.push(`<w:tr>${tcs.join('')}</w:tr>`)
+      // 행 높이 — 뷰어에서 td height는 최소 높이로 동작한다
+      const hPt = row.reduce((m, cell) => (cell.rowSpan > 1 ? m : Math.max(m, cell.heightPt)), 0)
+      const trPr = hPt > 0 ? `<w:trPr><w:trHeight w:val="${twip(hPt)}" w:hRule="atLeast"/></w:trPr>` : ''
+      trs.push(`<w:tr>${trPr}${tcs.join('')}</w:tr>`)
     })
 
     return (
@@ -196,8 +259,8 @@ export interface DocxResult {
   stats: { paragraphs: number; tables: number; images: number }
 }
 
-/** IR HTML의 body → docx 바이트 */
-export function html2docx(root: Element): DocxResult {
+/** IR HTML의 body → docx 바이트. embed를 주면 글꼴을 문서에 심는다. */
+export function html2docx(root: Element, embed?: EmbeddedFont): DocxResult {
   const doc: IrDoc = readIr(root)
   const w = new DocxWriter()
   const seq = { n: 0 }
@@ -219,12 +282,39 @@ export function html2docx(root: Element): DocxResult {
 <w:document ${NS}><w:body>${bodies.join('')}${sectPr}</w:body></w:document>`
 
   const files: Record<string, Uint8Array> = {
-    '[Content_Types].xml': strToU8(CONTENT_TYPES(w.extensions())),
+    '[Content_Types].xml': strToU8(CONTENT_TYPES(w.extensions(), !!embed)),
     '_rels/.rels': strToU8(ROOT_RELS),
     'word/document.xml': strToU8(document),
-    'word/_rels/document.xml.rels': strToU8(w.documentRels()),
+    'word/styles.xml': strToU8(STYLES),
+    'word/settings.xml': strToU8(SETTINGS(!!embed)),
+    'word/_rels/document.xml.rels': strToU8(w.documentRels(!!embed)),
   }
   for (const m of w.mediaFiles()) files[`word/media/${m.name}`] = m.bytes
+
+  // 글꼴 파트는 난독화된 .odttf로만 받아들여진다 (ECMA-376 §17.8.1)
+  if (embed) {
+    const faces: string[] = []
+    const fontRels: string[] = []
+    const R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+    const add = (tag: 'embedRegular' | 'embedBold', bytes: Uint8Array, rid: string, file: string) => {
+      const key = fontKeyFor(`${embed.family}:${tag}:${bytes.length}`)
+      files[`word/fonts/${file}`] = obfuscateFont(bytes, key)
+      faces.push(`<w:${tag} r:id="${rid}" w:fontKey="${key}" w:subsetted="1"/>`)
+      fontRels.push(`<Relationship Id="${rid}" Type="${R}/font" Target="fonts/${file}"/>`)
+    }
+    add('embedRegular', embed.regular, 'rId1', 'font1.odttf')
+    if (embed.bold) add('embedBold', embed.bold, 'rId2', 'font2.odttf')
+    files['word/_rels/fontTable.xml.rels'] = strToU8(
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${fontRels.join('')}</Relationships>`,
+    )
+    files['word/fontTable.xml'] = strToU8(
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:fonts xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<w:font w:name="${esc(embed.family)}"><w:charset w:val="81"/><w:family w:val="swiss"/><w:pitch w:val="variable"/>${faces.join('')}</w:font>
+</w:fonts>`,
+    )
+  }
 
   const count = (re: RegExp) => (document.match(re) ?? []).length
   return {

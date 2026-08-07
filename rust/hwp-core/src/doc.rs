@@ -1,4 +1,4 @@
-//! DOC(Word 97-2003, MS-DOC) 파싱 — OLE 바이너리를 hwp2html 문서 모델로 매핑한다.
+//! DOC(Word 97-2003, MS-DOC) 파싱 — OLE 바이너리를 Narro 문서 모델로 매핑한다.
 //!
 //! .docx가 XML을 읽는 일이라면 .doc은 .hwp와 같은 부류의 바이트 해독이다. 구조:
 //!

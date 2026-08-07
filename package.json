@@ -1,5 +1,5 @@
 {
-  "name": "hwp2html",
+  "name": "narro",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -9,6 +9,7 @@
     "convert": "bun run scripts/convert.ts",
     "validate": "bun run scripts/validate.ts",
     "tohwpx": "bun run scripts/tohwpx.ts",
+    "export": "bun run scripts/export.ts",
     "compare": "bun run scripts/compare.ts",
     "edit-sim": "bun run scripts/edit-sim.ts",
     "wasm:build": "wasm-pack build rust/hwp-core --target web --release",

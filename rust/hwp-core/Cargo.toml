@@ -2,7 +2,7 @@
 name = "hwp-core"
 version = "0.1.0"
 edition = "2021"
-description = "HWP 5.x binary parser producing the hwp2html document-model JSON contract"
+description = "HWP 5.x binary parser producing the Narro document-model JSON contract"
 license = "Apache-2.0"
 
 [lib]

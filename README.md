@@ -1,4 +1,4 @@
-# hwp→html
+# Narro
 
 한글(.hwp/.hwpx)과 Word·오픈오피스(.doc/.docx/.odt) 문서를 **브라우저 안에서** HTML로
 변환하는 실험. 파일이 서버로 올라가지 않고 전부 클라이언트에서 파싱된다.
@@ -40,9 +40,9 @@ run 스타일 충실도가 더 높다 (예: 양식 안내문의 빨간 기울임
 
 ## 디자인 시스템
 
-UI 크롬은 **hwp2html Design System**("고요한 정밀함 / Quiet Precision, Linear-refined" —
+UI 크롬은 **Narro Design System**("고요한 정밀함 / Quiet Precision, Linear-refined" —
 DearDent EMR DS 이식)을 따른다. **UI를 만들거나 고치기 전에
-`.claude/skills/hwp2html-design-system/SKILL.md`를 먼저 읽을 것.** 토큰 구현체는
+`.claude/skills/narro-design-system/SKILL.md`를 먼저 읽을 것.** 토큰 구현체는
 `src/index.css`(3-tier: primitives → semantic aliases → components), 브랜드 자산은
 `public/icons/`(narro 로고). 변환된 문서 콘텐츠(doc-section 내부)는 DS 적용 대상이 아니다
 — 원본 충실도 우선.
@@ -52,12 +52,14 @@ DearDent EMR DS 이식)을 따른다. **UI를 만들거나 고치기 전에
 ```bash
 bun install
 bun run dev            # http://localhost:5173 — 문서 드래그&드롭
+                       #   ?doc=<url> 로 링크에서 바로 열기 (다른 오리진이면 CORS 필요)
 bun run build          # 프로덕션 번들 (dist/)
 
 # CLI 변환 (브라우저와 동일한 코드 경로 — 다섯 포맷 모두)
 bun run convert <input> [output.html]
 bun run validate <input>            # 변환 결과가 IR 계약을 지키는지 검사
 bun run tohwpx <input> [out.hwpx]   # 입력 → IR → hwpx 왕복 E2E + 검증
+bun run export <ir.html> [out-dir]  # 반대 방향 — 손으로 쓴 IR HTML → hwpx·docx·odt (+미리보기)
 bun run matrix [out-dir]            # SOT 한 장 → 전 포맷 쓰기 → 되읽기 왕복 대조
 bun run compare <input.hwp>         # Rust WASM vs hwp.js 파서 골든 비교
 bun run wasm:build                  # Rust 파서 재빌드 (rust/hwp-core 수정 후)
@@ -154,7 +156,7 @@ src/lib/model.ts      # 문서 모델 계약 (Rust model.rs와 1:1 — 항상 �
 src/lib/parser-wasm.ts# WASM 파서 로더 (브라우저 url / CLI bytes 초기화)
 src/lib/parser-js.ts  # hwp.js 폴백 — 같은 문서 모델로 정규화
 src/lib/ir.ts         # 스펙의 실행 가능한 형태: IR_VERSION + validateIR() 린터
-src/lib/hwp2html.ts   # 방출기: 문서 모델 → IR HTML { body, standalone, stats }
+src/lib/narro.ts      # 방출기: 문서 모델 → IR HTML { body, standalone, stats }
 src/lib/ir-model.ts   # IR HTML → 중립 문서 트리 (쓰기 백엔드 공용)
 src/lib/html2hwpx.ts  # 쓰기: IR HTML → hwpx (템플릿+주입, fflate)
 src/lib/html2docx.ts  # 쓰기: IR → docx (OOXML 패키지 생성)
@@ -164,6 +166,7 @@ src/App.tsx           # 드롭존 → 미리보기(iframe srcDoc) / 소스 보�
 scripts/convert.ts    # CLI — 같은 변환기를 bun에서 실행 (E2E 검증용)
 scripts/validate.ts   # CLI — 변환 결과의 IR 계약 검증 (CI 게이트용)
 scripts/tohwpx.ts     # CLI — hwp→IR→hwpx 왕복 + XML/텍스트/zip 규칙 검증
+scripts/export.ts     # CLI — 손으로 쓴 IR HTML → hwpx·docx·odt (린터 게이트 + 되읽기 대조)
 scripts/matrix.ts     # CLI — SOT 한 장으로 전 포맷 쓰기·되읽기 대조 (변환 매트릭스)
 scripts/probe*.ts     # hwp.js 파싱 탐색용 스크립트
 ```

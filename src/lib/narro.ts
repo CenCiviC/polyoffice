@@ -28,11 +28,25 @@ export interface ConvertResult {
 const TEXT_ALIGN: Record<number, string> = { 0: 'justify', 1: 'left', 2: 'right', 3: 'center' }
 
 const BASE_CSS = `
+  /* 본문 글꼴은 제품이 직접 들고 다닌다 — CDN에 기대면 오프라인·사내망에서 대체되고,
+     내보낸 docx·hwpx에는 어차피 이름만 들어가므로 화면과 문서가 어긋난다.
+     같은 파일을 내보내기 때 서브셋해 문서에 심는다(font-embed.ts). */
+  @font-face { font-family: 'Noto Sans KR'; font-weight: 400; font-display: swap;
+    src: url('/fonts/NotoSansKR-Regular.woff2') format('woff2'); }
+  @font-face { font-family: 'Noto Sans KR'; font-weight: 700; font-display: swap;
+    src: url('/fonts/NotoSansKR-Bold.woff2') format('woff2'); }
   body { margin: 0; background: #e8eaed; font-family: 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif; }
   doc-section.hwp-page { display: block; box-sizing: border-box; background: #fff; margin: 20px auto; box-shadow: 0 1px 3px 1px rgba(60,64,67,.15); overflow: hidden; }
-  /* 한글은 word-break:normal에서도 음절 단위로 끊긴다 — break-all은 라틴/키릴 단어만
-     한가운데서 자른다. overflow-wrap으로 넘칠 때만 강제로 끊는다. */
-  .hwp-page p { margin: 0; min-height: 1em; white-space: pre-wrap; word-break: normal; overflow-wrap: break-word; line-height: 1.6; }
+  /* 줄바꿈 단위: 한글도 어절(띄어쓰기) 단위로 끊는다.
+     word-break:normal이면 브라우저가 한글을 CJK로 보고 음절 아무 데서나 끊어서,
+     같은 문단이 Word(어절 단위)와 다른 줄 수로 조판된다 — keep-all이 그 둘을 맞춘다.
+     끊을 곳이 없어 넘칠 때만 overflow-wrap이 강제로 자른다. */
+  /* 기본 글자 크기는 IR 계약의 기본값(10pt)과 같게 못박는다 — 안 그러면 브라우저 기본 16px가
+     빈 문단 높이가 되어 쓰기 백엔드(1.6×10pt=16pt)와 어긋난다. */
+  .hwp-page { font-size: 10pt; }
+  .hwp-page p { margin: 0; min-height: 1em; white-space: pre-wrap; word-break: keep-all; line-break: strict; overflow-wrap: break-word; font-kerning: none; line-height: 1.6; }
+  /* 빈 문단은 한 줄 높이를 차지한다 (백엔드의 빈 문단과 같은 16pt) */
+  .hwp-page p:empty { min-height: 1.6em; }
   table.hwp-table { border-collapse: collapse; margin: 2pt 0; }
   table.hwp-table td { border: 1px solid #555; vertical-align: middle; }
   .hwp-page img { max-width: 100%; }

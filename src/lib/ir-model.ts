@@ -35,13 +35,35 @@ export interface IrPara {
   align: IrAlign
   runs: IrRun[]
   images: IrImage[]
+  /** h1~h6이면 1~6, 아니면 0. 뷰어 CSS의 제목 여백·줄간격을 백엔드가 그대로 재현하는 데 쓴다 */
+  heading: number
 }
+
+/** 뷰어 BASE_CSS의 제목 규칙 — margin: 4pt 0 2pt · line-height: 1.4 */
+export const HEADING_SPACE = { beforePt: 4, afterPt: 2, lineHeight: 1.4 }
+
+/**
+ * 금칙처리 강도 — 닫는 괄호·마침표를 줄 첫머리에 두지 않는 등의 규칙.
+ * 'strict'가 한글 조판 관행에 가깝다. 엔진마다 적용 문자 집합이 달라서 켜고 끄는 것과
+ * 강도까지만 맞출 수 있고, 어떤 문자를 금칙으로 볼지는 docx(settings.xml)에서만 지정 가능하다.
+ * hwpx는 OWPML에 노출된 스위치가 없어 한글 엔진 기본값을 따른다.
+ */
+export const LINE_BREAK: 'normal' | 'strict' = 'strict'
+
+/**
+ * 글꼴이 지정되지 않은 런의 기본 글꼴.
+ * 지정한 글꼴이 그 기기에 없으면 뷰어와 워드프로세서가 **서로 다른 글꼴로 대체**해서
+ * 글자 폭이 달라지고 첫 줄부터 줄바꿈 위치가 어긋난다. 두 곳 모두에 실재하는 글꼴을 쓸 것.
+ */
+export const DOC_FONT = 'Noto Sans KR'
 
 export interface IrCell {
   colSpan: number
   rowSpan: number
   widthPt: number
   heightPt: number
+  /** 셀 안쪽 여백(pt) — [상, 우, 하, 좌] */
+  paddingPt: [number, number, number, number]
   /** #RRGGBB */
   background: string | null
   blocks: IrBlock[]
@@ -80,6 +102,13 @@ export function xmlSafe(s: string): string {
   // oxlint-disable-next-line no-control-regex -- XML이 금지한 문자를 걸러내는 게 목적
   return s.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g, '')
 }
+
+/**
+ * 문단 기본 줄간격 — 뷰어 BASE_CSS의 line-height와 같은 값.
+ * 이걸 안 정하면 백엔드가 각자 기본값(hwpx 템플릿 180%, ODF 100%, Word 1.08+뒤여백 8pt)을
+ * 써서 같은 IR인데 포맷마다 페이지 수가 달라진다. 기본값의 진실원은 여기 하나다.
+ */
+export const DEFAULT_LINE_HEIGHT = 1.6
 
 const DEFAULT_STYLE: IrStyle = {
   sizePt: 10,
@@ -134,6 +163,20 @@ export function toPt(value: string | null): number | null {
   }
 }
 
+/**
+ * CSS padding 단축 표기 → [상, 우, 하, 좌] (pt).
+ * 백엔드마다 셀 여백 기본값이 달라서(hwpx 5.1pt / odt 3.6pt / Word 0.08in) 여기서 한 번에 읽어
+ * 셋 다 IR 값을 그대로 쓰게 한다. 없으면 0 — 계약에 안 적힌 여백은 넣지 않는다.
+ */
+export function readPadding(el: Element | null): [number, number, number, number] {
+  const parts = (styleProp(el, 'padding') ?? '')
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((v) => toPt(v) ?? 0)
+  const [top = 0, right = top, bottom = top, left = right] = parts
+  return [top, right, bottom, left]
+}
+
 function readStyle(el: Element | null, inherited: IrStyle): IrStyle {
   if (!el) return inherited
   const deco = styleProp(el, 'text-decoration') ?? ''
@@ -171,7 +214,8 @@ function readImage(img: Element): IrImage | null {
 }
 
 function readPara(p: Element): IrPara {
-  const para: IrPara = { align: alignOf(p), runs: [], images: [] }
+  const h = /^H([1-6])$/.exec(p.tagName)
+  const para: IrPara = { align: alignOf(p), runs: [], images: [], heading: h ? Number(h[1]) : 0 }
   const base = readStyle(p, DEFAULT_STYLE)
 
   const push = (text: string, style: IrStyle) => {
@@ -231,6 +275,7 @@ function readTable(table: Element): IrTable {
         rowSpan: Number(td.getAttribute('rowspan') ?? 1) || 1,
         widthPt: toPt(styleProp(td, 'width')) ?? 0,
         heightPt: toPt(styleProp(td, 'height')) ?? 0,
+        paddingPt: readPadding(td),
         background: toHex(styleProp(td, 'background') ?? styleProp(td, 'background-color')),
         blocks: readBlocks(td),
       })

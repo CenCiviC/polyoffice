@@ -11,7 +11,26 @@
  */
 import { unzipSync, zipSync, strToU8, strFromU8 } from 'fflate'
 
-import { xmlSafe } from './ir-model'
+import { DEFAULT_LINE_HEIGHT, HEADING_SPACE, xmlSafe } from './ir-model'
+import type { EmbeddedFont } from './font-embed'
+
+/**
+ * 템플릿(blank.hwpx)의 기본 문단모양을 IR 기준으로 맞춘다.
+ * 템플릿 값은 줄간격 180% · 문단 뒤 여백 1000 hwpunit(10pt)이라, 그대로 두면
+ * 같은 IR인데 hwpx만 docx/odt보다 세로로 훨씬 길어진다(문단 수 × 10pt).
+ */
+function patchBaseParaPr(headerXml: string): string {
+  const percent = Math.round(DEFAULT_LINE_HEIGHT * 100)
+  return headerXml.replace(/<hh:paraPr id="0".*?<\/hh:paraPr>/s, (block) =>
+    block
+      .replace(/lineSpacing type="PERCENT" value="\d+"/g, `lineSpacing type="PERCENT" value="${percent}"`)
+      .replace(/(<hc:prev value=")\d+(")/, '$10$2')
+      .replace(/(<hc:next value=")\d+(")/, '$10$2')
+      .replace(/snapToGrid="1"/, 'snapToGrid="0"')
+      // 한글도 어절 단위로 끊는다 (템플릿 기본은 글자 단위 — Word·뷰어와 줄 수가 달라진다)
+      .replace(/breakNonLatinWord="\w+"/, 'breakNonLatinWord="KEEP_WORD"'),
+  )
+}
 
 const esc = (s: string) =>
   xmlSafe(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
@@ -96,7 +115,8 @@ class HwpxWriter {
   private nextFontId = 0
 
   constructor(headerXml: string) {
-    this.headerXml = headerXml
+    this.headerXml = patchBaseParaPr(headerXml)
+    headerXml = this.headerXml
     this.nextCharPrId = this.maxId(/<hh:charPr id="(\d+)"/g) + 1
     this.nextParaPrId = this.maxId(/<hh:paraPr id="(\d+)"/g) + 1
     this.nextBorderFillId = this.maxId(/<hh:borderFill id="(\d+)"/g) + 1
@@ -166,12 +186,12 @@ class HwpxWriter {
   }
 
   /** 기본형은 템플릿 paraPr 0 재사용, 정렬/줄간격이 다르면 paraPr 0을 복제해 해당 값만 교체 */
-  paraPrId(align: string, lineHeight?: number | null): number {
+  paraPrId(align: string, lineHeight?: number | null, heading = false): number {
     const horizontal = align === 'center' ? 'CENTER' : align === 'right' ? 'RIGHT' : 'LEFT'
     // CSS line-height 비율 ≈ 한글 줄간격 PERCENT (1.5 → 150%)
-    const percent = lineHeight ? Math.round(lineHeight * 100) : null
-    if (horizontal === 'LEFT' && percent === null) return 0
-    const key = `${horizontal}|${percent ?? ''}`
+    const percent = lineHeight ? Math.round(lineHeight * 100) : heading ? Math.round(HEADING_SPACE.lineHeight * 100) : null
+    if (horizontal === 'LEFT' && percent === null && !heading) return 0
+    const key = `${horizontal}|${percent ?? ''}|${heading ? 'h' : ''}`
     let id = this.paraPrs.get(key)
     if (id === undefined) {
       id = this.nextParaPrId++
@@ -181,6 +201,12 @@ class HwpxWriter {
         .replace(/horizontal="[A-Z]+"/, `horizontal="${horizontal}"`)
       if (percent !== null)
         xml = xml.replace(/lineSpacing type="PERCENT" value="\d+"/g, `lineSpacing type="PERCENT" value="${percent}"`)
+      // 뷰어 CSS의 제목 여백(margin: 4pt 0 2pt)을 문단 앞뒤 여백으로 옮긴다
+      if (heading) {
+        xml = xml
+          .replace(/(<hc:prev value=")\d+(")/, `$1${hwpUnit(HEADING_SPACE.beforePt)}$2`)
+          .replace(/(<hc:next value=")\d+(")/, `$1${hwpUnit(HEADING_SPACE.afterPt)}$2`)
+      }
       this.newParaPrXml.push(xml)
     }
     return id
@@ -209,13 +235,20 @@ class HwpxWriter {
     }
   }
 
+  /** 임베드한 글꼴 이름 → BinData 항목 이름 (fontface에 isEmbedded="1"로 표시) */
+  embeddedFace: { face: string; item: string } | null = null
+
   /** header.xml에 신규 항목 삽입 + itemCnt 갱신 */
   patchHeader(): string {
     let xml = this.headerXml
     // 신규 폰트: 7개 언어 그룹 전부에 등록 + 그룹별 fontCnt 갱신
     if (this.newFonts.length) {
       const entries = this.newFonts
-        .map((f) => `<hh:font id="${f.id}" face="${esc(f.face)}" type="TTF" isEmbedded="0"/>`)
+        .map((f) =>
+          this.embeddedFace && f.face === this.embeddedFace.face
+            ? `<hh:font id="${f.id}" face="${esc(f.face)}" type="TTF" isEmbedded="1" binaryItemIDRef="${this.embeddedFace.item}"/>`
+            : `<hh:font id="${f.id}" face="${esc(f.face)}" type="TTF" isEmbedded="0"/>`,
+        )
         .join('')
       xml = xml.replace(
         /(<hh:fontface lang="[A-Z]+" fontCnt=")(\d+)(">)/g,
@@ -256,6 +289,40 @@ function charStyleOf(el: Element | null): CharStyle {
     shade: bg ? rgbToHex(bg) : null,
     family: get('font-family'),
   }
+}
+
+/** 1pt = 100 hwpunit */
+const hwpUnit = (pt: number) => Math.round(pt * 100)
+
+/** CSS padding 단축 표기 → [상, 우, 하, 좌] (pt). ir-model.readPadding과 같은 규칙. */
+function paddingOf(el: Element): [number, number, number, number] {
+  const parts = (tdStyle(el, 'padding') ?? '')
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((v) => ptOf(v) ?? 0)
+  const [top = 0, right = top, bottom = top, left = right] = parts
+  return [top, right, bottom, left]
+}
+
+/**
+ * 템플릿 secPr의 페이지 설정을 IR doc-section 값으로 교체한다.
+ * 이걸 안 하면 hwpx만 템플릿 고정값(위 0.59in + 머리말 0.59in …)을 써서
+ * 같은 IR인데 docx/odt와 본문 영역이 달라진다. 머리말/꼬리말은 아직 안 만들므로
+ * 0으로 두고 그만큼을 위/아래 여백에 그대로 준다.
+ */
+function patchPagePr(run: string, section: Element): string {
+  const w = ptOf(tdStyle(section, 'width'))
+  const h = ptOf(tdStyle(section, 'min-height') ?? tdStyle(section, 'height'))
+  if (!w || !h) return run
+  const [top, right, bottom, left] = tdStyle(section, 'padding') ? paddingOf(section) : [72, 72, 72, 72]
+  return run
+    .replace(/(<hp:pagePr[^>]*\bwidth=")\d+(")/, `$1${hwpUnit(w)}$2`)
+    .replace(/(<hp:pagePr[^>]*\bheight=")\d+(")/, `$1${hwpUnit(h)}$2`)
+    .replace(
+      /<hp:margin\b[^>]*\/>/,
+      `<hp:margin header="0" footer="0" gutter="0" left="${hwpUnit(left)}" ` +
+        `right="${hwpUnit(right)}" top="${hwpUnit(top)}" bottom="${hwpUnit(bottom)}"/>`,
+    )
 }
 
 function tdStyle(el: Element, prop: string): string | null {
@@ -311,7 +378,7 @@ class SectionBuilder {
           runs.push(
             `<hp:run charPrIDRef="0"><hp:ctrl><hp:footNote number="0" instId="${inst}">` +
               `<hp:autoNum num="0" numType="FOOTNOTE"/>` +
-              `<hp:subList id="${inst}" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="TOP" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">${this.blockChildrenXml(content)}</hp:subList>` +
+              `<hp:subList id="${inst}" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="CENTER" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">${this.blockChildrenXml(content)}</hp:subList>` +
               `</hp:footNote></hp:ctrl></hp:run>`,
           )
         }
@@ -351,7 +418,7 @@ class SectionBuilder {
   paragraphXml(p: Element, extraFirstRun = '', opts?: { pageBreak?: boolean; defaultStyle?: CharStyle }): string {
     const align = tdStyle(p, 'text-align') ?? 'left'
     const lh = tdStyle(p, 'line-height')
-    const paraPr = this.w.paraPrId(align, lh ? parseFloat(lh) : null)
+    const paraPr = this.w.paraPrId(align, lh ? parseFloat(lh) : null, /^H[1-6]$/.test(p.tagName))
     return `<hp:p paraPrIDRef="${paraPr}" styleIDRef="0" pageBreak="${opts?.pageBreak ? 1 : 0}" columnBreak="0" merged="0">${extraFirstRun}${this.runsXml(p, opts?.defaultStyle)}</hp:p>`
   }
 
@@ -378,15 +445,16 @@ class SectionBuilder {
         const hPt = ptOf(tdStyle(td, 'height')) ?? 15
         const bg = tdStyle(td, 'background')
         const bfId = this.w.borderFillId(bg ? rgbToHex(bg) : null)
+        const [padT, padR, padB, padL] = paddingOf(td)
 
         const inner = this.blockChildrenXml(td)
         rowXml.push(
           `<hp:tc name="" header="0" hasMargin="0" protect="0" editable="0" dirty="0" borderFillIDRef="${bfId}">` +
-            `<hp:subList id="${this.w.nextObjId()}" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="TOP" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">${inner}</hp:subList>` +
+            `<hp:subList id="${this.w.nextObjId()}" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="CENTER" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">${inner}</hp:subList>` +
             `<hp:cellAddr colAddr="${c}" rowAddr="${r}"/>` +
             `<hp:cellSpan colSpan="${colSpan}" rowSpan="${rowSpan}"/>` +
             `<hp:cellSz width="${Math.round(wPt * 100)}" height="${Math.round(hPt * 100)}"/>` +
-            `<hp:cellMargin left="510" right="510" top="141" bottom="141"/>`,
+            `<hp:cellMargin left="${hwpUnit(padL)}" right="${hwpUnit(padR)}" top="${hwpUnit(padT)}" bottom="${hwpUnit(padB)}"/>`,
         )
         rowXml[rowXml.length - 1] += `</hp:tc>`
         c += colSpan
@@ -406,7 +474,7 @@ class SectionBuilder {
       `<hp:sz width="${Math.round(firstRowWidth * 100)}" widthRelTo="ABSOLUTE" height="1000" heightRelTo="ABSOLUTE" protect="0"/>` +
       `<hp:pos treatAsChar="0" affectLSpacing="0" flowWithText="1" allowOverlap="0" holdAnchorAndSO="0" vertRelTo="PARA" horzRelTo="COLUMN" vertAlign="TOP" horzAlign="LEFT" vertOffset="0" horzOffset="0"/>` +
       `<hp:outMargin left="0" right="0" top="141" bottom="141"/>` +
-      `<hp:inMargin left="510" right="510" top="141" bottom="141"/>` +
+      `<hp:inMargin left="0" right="0" top="0" bottom="0"/>` +
       cellsXml.map((row) => `<hp:tr>${row.join('')}</hp:tr>`).join('') +
       `</hp:tbl>`
     )
@@ -489,7 +557,8 @@ function patchManifest(hpf: string, bins: { path: string; bytes: Uint8Array }[])
     .map(({ path }) => {
       const name = path.replace(/^BinData\//, '').replace(/\.[^.]+$/, '')
       const ext = path.split('.').pop() ?? 'png'
-      return `<opf:item id="${name}" href="${path}" media-type="image/${ext}" isEmbeded="1"/>`
+      const type = ext === 'ttf' ? 'application/x-font-ttf' : `image/${ext}`
+      return `<opf:item id="${name}" href="${path}" media-type="${type}" isEmbeded="1"/>`
     })
     .join('')
   return hpf.includes('</opf:manifest>')
@@ -497,7 +566,7 @@ function patchManifest(hpf: string, bins: { path: string; bytes: Uint8Array }[])
     : hpf
 }
 
-export function html2hwpx(root: Element, template: Uint8Array): HwpxResult {
+export function html2hwpx(root: Element, template: Uint8Array, embed?: EmbeddedFont): HwpxResult {
   const files = unzipSync(template)
   const headerXml = strFromU8(files['Contents/header.xml'])
   const sectionXml = strFromU8(files['Contents/section0.xml'])
@@ -532,9 +601,18 @@ export function html2hwpx(root: Element, template: Uint8Array): HwpxResult {
   const sections = Array.from(root.querySelectorAll('doc-section'))
   const container = sections.length ? sections[0] : root
   // v0: 다중 섹션은 첫 섹션의 페이지 설정으로 병합 (섹션별 secPr는 v0.3)
-  let body = builder.blockChildrenXml(container, setupRun)
+  let body = builder.blockChildrenXml(container, patchPagePr(setupRun, container as Element))
   for (const extra of sections.slice(1)) {
     body += builder.blockChildrenXml(extra)
+  }
+
+  // 글꼴 임베딩 — OWPML의 hh:font isEmbedded/binaryItemIDRef 규격.
+  // 한글이 실제로 읽어주는지는 이 기기에 한글이 없어 검증하지 못했다.
+  const fontBins: { path: string; bytes: Uint8Array }[] = []
+  if (embed) {
+    writer.embeddedFace = { face: embed.family, item: 'fontR' }
+    fontBins.push({ path: 'BinData/fontR.ttf', bytes: embed.regular })
+    if (embed.bold) fontBins.push({ path: 'BinData/fontB.ttf', bytes: embed.bold })
   }
 
   const newSection = `${prefix}\n${body}\n</hs:sec>`
@@ -549,11 +627,15 @@ export function html2hwpx(root: Element, template: Uint8Array): HwpxResult {
     if (name === 'Contents/section0.xml') out[name] = [strToU8(newSection), { level: 6 }]
     else if (name === 'Contents/header.xml') out[name] = [strToU8(newHeader), { level: 6 }]
     else if (name === 'Contents/content.hpf')
-      out[name] = [strToU8(patchManifest(strFromU8(data), writer.binFiles())), { level: 6 }]
+      out[name] = [strToU8(patchManifest(strFromU8(data), [...writer.binFiles(), ...fontBins])), { level: 6 }]
     else out[name] = [data, { level: 6 }]
   }
   // 이미지 바이너리 (이미 압축 포맷이므로 무압축 저장)
   for (const { path, bytes } of writer.binFiles()) out[path] = [bytes, { level: 0 }]
+  for (const { path, bytes } of fontBins) out[path] = [bytes, { level: 6 }]
+  // 글꼴 임베딩 — OWPML의 hh:font isEmbedded/binaryItemIDRef 규격.
+  // 한글이 실제로 읽어주는지는 이 기기에 한글이 없어 검증하지 못했다.
+
 
   return { data: zipSync(out), added: writer.addedCounts() }
 }
