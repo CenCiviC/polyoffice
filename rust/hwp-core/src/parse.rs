@@ -28,6 +28,9 @@ const TAG_TABLE: u16 = 0x10 + 61;
 const CTRL_TABLE: u32 = ctrl_id(b"tbl ");
 const CTRL_GSO: u32 = ctrl_id(b"gso ");
 const CTRL_FOOTNOTE: u32 = ctrl_id(b"fn  ");
+const CTRL_HEAD: u32 = ctrl_id(b"head");
+const CTRL_FOOT: u32 = ctrl_id(b"foot");
+const CTRL_AUTO_NUM: u32 = ctrl_id(b"atno");
 const CTRL_ENDNOTE: u32 = ctrl_id(b"en  ");
 
 const fn ctrl_id(s: &[u8; 4]) -> u32 {
@@ -185,11 +188,22 @@ fn visit_doc_info(
             TAG_BORDER_FILL => {
                 let mut r = ByteReader::new(&rec.data);
                 r.u16()?; // attribute
+                // 왼·오른·위·아래 순. 종류·굵기는 표 인덱스다(hwp.js가 쓰는 것과 같은 표).
+                let mut sides = Vec::new();
                 for _ in 0..4 {
-                    r.u8()?; // border type
-                    r.u8()?; // border width
-                    r.u32()?; // border color
+                    let kind = r.u8()?;
+                    let width = r.u8()?;
+                    let color = r.u32()?;
+                    sides.push((kind, width, color));
                 }
+                // IR은 네 변을 따로 담지 못한다 — 없음이 아닌 첫 변을 대표로 쓴다
+                let border = Some(sides.iter().find_map(|&(kind, width, color)| {
+                    Some(Border {
+                        width_pt: BORDER_MM.get(width as usize).copied().unwrap_or(0.12) * 72.0 / 25.4,
+                        style: border_style(kind)?.to_string(),
+                        color: rgb(color),
+                    })
+                }));
                 r.skip(6)?; // diagonal type/width/color
                 let fill_type = r.u32()?;
                 let background_color = if fill_type == 1 {
@@ -199,7 +213,7 @@ fn visit_doc_info(
                 };
                 info.border_fills.push(BorderFill {
                     background_color,
-                    border: None,
+                    border,
                 });
             }
             TAG_PARA_SHAPE => {
@@ -213,15 +227,22 @@ fn visit_doc_info(
                 let first_line = r.i32().unwrap_or(0);
                 let space_before = r.i32().unwrap_or(0);
                 let space_after = r.i32().unwrap_or(0);
+                // 뒤이어 줄간격(i32) · 탭정의ID(u16) · **번호 문단 ID**(u16).
+                // 구버전은 여기가 잘려 있을 수 있어 없으면 0.
+                let _line_spacing = r.i32().unwrap_or(0);
+                let _tab_def = r.u16().unwrap_or(0);
+                let head_id = r.u16().unwrap_or(0);
                 info.para_shapes.push(ParaShape {
                     align: bits(attr, 2, 4) as u8,
                     indent,
                     first_line,
                     space_before,
                     space_after,
-                    head_kind: 0,
-                    head_level: 0,
-                    head_id: 0,
+                    // 속성1 bit 23-24 문단 머리 종류(0 없음·1 개요·2 번호·3 글머리표),
+                    // bit 25-27 문단 수준. HWP5 문단 모양 속성표 그대로다.
+                    head_kind: bits(attr, 23, 24) as u8,
+                    head_level: bits(attr, 25, 27) as u8,
+                    head_id,
                 });
             }
             _ => {}
@@ -242,6 +263,23 @@ enum CharItem {
     Extended(u16),
 }
 
+/// 테두리 굵기 표(mm) — 파일에는 이 표의 **인덱스**가 들어 있다.
+/// hwp.js(동작하는 렌더러)와 같은 표이고, 우리 hwpx 쓰기가 스냅하는 값과도 같다.
+const BORDER_MM: [f32; 16] = [
+    0.1, 0.12, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0,
+];
+
+/// 테두리 종류 인덱스 → IR 어휘. 0은 "없음"이라 None.
+fn border_style(kind: u8) -> Option<&'static str> {
+    match kind {
+        0 => None,
+        2 => Some("dashed"),
+        3 => Some("dotted"),
+        8 => Some("double"),
+        _ => Some("solid"),
+    }
+}
+
 struct RawParagraph {
     shape_index: u16,
     chars: Vec<(u32, CharItem)>,
@@ -249,6 +287,8 @@ struct RawParagraph {
     tables: Vec<Table>,
     images: Vec<Image>,
     footnotes: Vec<Footnote>,
+    /// 이 문단에 든 쪽번호 자동 번호 개수 — 본문의 컨트롤 문자(18) 자리에 채운다
+    page_fields: usize,
 }
 
 fn parse_section(data: &[u8]) -> Result<Section, String> {
@@ -275,6 +315,7 @@ fn parse_paragraph(rec: &Record, section: &mut Section) -> Result<RawParagraph, 
         tables: Vec::new(),
         images: Vec::new(),
         footnotes: Vec::new(),
+        page_fields: 0,
     };
 
     for child in &rec.children {
@@ -293,6 +334,35 @@ fn parse_paragraph(rec: &Record, section: &mut Section) -> Result<RawParagraph, 
         }
     }
     Ok(para)
+}
+
+/// CTRL_HEADER 아래의 LIST_HEADER + 문단들 → 문단 목록.
+/// 각주·머리말·꼬리말이 모두 같은 모양이라 한 곳에서 읽는다.
+fn sublist_paragraphs(rec: &Record, section: &mut Section) -> Result<Vec<Paragraph>, String> {
+    let mut children = rec.children.iter().peekable();
+    let mut out = Vec::new();
+    while let Some(child) = children.next() {
+        if child.tag != TAG_LIST_HEADER {
+            continue;
+        }
+        let mut lr = ByteReader::new(&child.data);
+        let para_count = if child.data.len() == 30 {
+            lr.u16()? as u32
+        } else {
+            lr.u32()?
+        };
+        for _ in 0..para_count {
+            match children.peek() {
+                Some(p) if p.tag == TAG_PARA_HEADER => {
+                    let p = children.next().unwrap();
+                    let raw = parse_paragraph(p, section)?;
+                    out.push(digest(raw));
+                }
+                _ => break,
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn parse_para_text(data: &[u8], para: &mut RawParagraph) -> Result<(), String> {
@@ -392,33 +462,33 @@ fn parse_ctrl(rec: &Record, para: &mut RawParagraph, section: &mut Section) -> R
 
     if ctrl == CTRL_FOOTNOTE || ctrl == CTRL_ENDNOTE {
         // 각주/미주: LIST_HEADER 뒤에 내용 문단들이 형제 레코드로 이어진다 (표 셀과 동일 패턴)
-        let mut children = rec.children.iter().peekable();
-        let mut fn_paras = Vec::new();
-        while let Some(child) = children.next() {
-            if child.tag != TAG_LIST_HEADER {
-                continue;
-            }
-            let mut lr = ByteReader::new(&child.data);
-            let para_count = if child.data.len() == 30 {
-                lr.u16()? as u32
-            } else {
-                lr.u32()?
-            };
-            for _ in 0..para_count {
-                match children.peek() {
-                    Some(p) if p.tag == TAG_PARA_HEADER => {
-                        let p = children.next().unwrap();
-                        let raw = parse_paragraph(p, section)?;
-                        fn_paras.push(digest(raw));
-                    }
-                    _ => break,
-                }
-            }
-        }
+        let fn_paras = sublist_paragraphs(rec, section)?;
         if !fn_paras.is_empty() {
             para.footnotes.push(Footnote {
                 paragraphs: fn_paras,
             });
+        }
+        return Ok(());
+    }
+
+    // 머리말·꼬리말 — 본문 흐름 밖이라 구역으로 올린다. 구조는 각주와 같다
+    // (CTRL_HEADER 아래 LIST_HEADER + 문단들). 컨트롤 id는 hwp.js와 같은 'head'·'foot'.
+    if ctrl == CTRL_HEAD || ctrl == CTRL_FOOT {
+        let paras = sublist_paragraphs(rec, section)?;
+        if !paras.is_empty() {
+            if ctrl == CTRL_HEAD {
+                section.header = paras;
+            } else {
+                section.footer = paras;
+            }
+        }
+        return Ok(());
+    }
+
+    // 자동 번호 — 속성 bit 0-3이 번호 종류다(0 = 쪽 번호). 숫자는 저장돼 있지 않다
+    if ctrl == CTRL_AUTO_NUM {
+        if bits(r.u32().unwrap_or(0), 0, 3) == 0 {
+            para.page_fields += 1;
         }
         return Ok(());
     }
@@ -569,7 +639,20 @@ fn digest(raw: RawParagraph) -> Paragraph {
         id
     };
 
+    let mut page_fields = raw.page_fields;
     for (wpos, item) in &raw.chars {
+        // 컨트롤 문자 18 = 자동 번호. 그 자리에 쪽번호 필드 런을 넣는다 —
+        // 번호 자체는 파일에 없다(렌더가 센다).
+        if matches!(item, CharItem::Extended(18)) && page_fields > 0 {
+            page_fields -= 1;
+            runs.push(Run {
+                char_shape_id: shape_at(*wpos),
+                text: String::new(),
+                link: None,
+                field: Some("page".to_string()),
+            });
+            continue;
+        }
         let piece = match item {
             CharItem::Text(c) => c.to_string(),
             CharItem::LineBreak => "\n".to_string(),

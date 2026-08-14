@@ -359,8 +359,12 @@ class Emitter {
         ].join(';')
         this.fnBlocks = []
         // 머리말·꼬리말은 본문 흐름 밖이라 구역 직계로 낸다 (IR 구조 규칙)
+        // 내용이 없는 머리말·꼬리말은 내보내지 않는다 — 실제로 빈 영역만 정의해 둔 문서가
+        // 흔한데, 그대로 옮기면 페이지마다 빈 문단이 하나씩 붙는다.
+        const hasText = (paras: ParagraphModel[]) =>
+          paras.some((p) => p.runs.some((r) => r.text.trim() || r.field) || p.images?.length || p.tables.length)
         const band = (tag: 'doc-header' | 'doc-footer', paras: ParagraphModel[] | undefined) =>
-          paras && paras.length ? `<${tag}>${this.blocksHTML(paras)}</${tag}>` : ''
+          paras && hasText(paras) ? `<${tag}>${this.blocksHTML(paras)}</${tag}>` : ''
         const head = band('doc-header', s.header) + band('doc-footer', s.footer)
         const content = this.blocksHTML(s.paragraphs)
         return `<doc-section class="hwp-page" data-ir="${IR_VERSION}" style="${style}">${head}${content}${this.fnBlocks.join('')}</doc-section>`
