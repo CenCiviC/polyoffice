@@ -11,7 +11,19 @@
  */
 import { unzipSync, zipSync, strToU8, strFromU8 } from 'fflate'
 
-import { DEFAULT_LINE_HEIGHT, HEADING_SPACE, xmlSafe } from './ir-model'
+import type { IrBorder, IrListMarker, IrVAlign } from './ir-model'
+import {
+  DEFAULT_LINE_HEIGHT,
+  HEADING_SPACE,
+  LIST_INDENT_PT,
+  CELL_BORDER,
+  CELL_VALIGN,
+  OUTLINE_SCHEME,
+  bulletChar,
+  parseBorder,
+  displayText,
+  xmlSafe,
+} from './ir-model'
 import type { EmbeddedFont } from './font-embed'
 
 /**
@@ -95,18 +107,99 @@ const CHARPR_TMPL = (id: number, s: CharStyle, fontId: number) => `<hh:charPr id
 }${s.vertAlign === 'super' ? '\n<hh:supscript/>' : s.vertAlign === 'sub' ? '\n<hh:subscript/>' : ''}
 </hh:charPr>`
 
-const BORDERFILL_TMPL = (id: number, fill: string | null) => `<hh:borderFill id="${id}" threeD="0" shadow="0" centerLine="NONE" breakCellSeparateLine="0">
+/**
+ * 테두리 종류·굵기 — 실물 한글 문서에서 쓰인 값만 쓴다.
+ * 굵기는 HWP가 고르는 값이 이산적이라(0.1·0.12·0.15… mm) 가장 가까운 것으로 맞춘다.
+ */
+const HWPX_BORDER_TYPE: Record<IrBorder['style'], string> = {
+  solid: 'SOLID',
+  dashed: 'DASH',
+  dotted: 'DOT',
+  double: 'DOUBLE_SLIM',
+}
+
+/** 셀 세로 정렬 — `hp:subList`의 vertAlign (실물 hwpx에서 CENTER·TOP 확인) */
+const HWPX_VALIGN: Record<string, string> = { top: 'TOP', middle: 'CENTER', bottom: 'BOTTOM' }
+
+const HWPX_BORDER_MM = [0.1, 0.12, 0.15, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 1, 1.5, 2, 3, 4, 5]
+
+function hwpxBorder(tag: string, b: IrBorder | null): string {
+  if (!b) return `<hh:${tag} type="NONE" width="0.1 mm" color="#000000"/>`
+  const mm = b.widthPt * 0.352778
+  const snapped = HWPX_BORDER_MM.reduce((best, v) => (Math.abs(v - mm) < Math.abs(best - mm) ? v : best))
+  return `<hh:${tag} type="${HWPX_BORDER_TYPE[b.style]}" width="${snapped} mm" color="${b.color}"/>`
+}
+
+const BORDERFILL_TMPL = (id: number, fill: string | null, border: IrBorder | null) => `<hh:borderFill id="${id}" threeD="0" shadow="0" centerLine="NONE" breakCellSeparateLine="0">
 <hh:slash type="NONE" Crooked="0" isCounter="0"/>
 <hh:backSlash type="NONE" Crooked="0" isCounter="0"/>
-<hh:leftBorder type="SOLID" width="0.12 mm" color="#000000"/>
-<hh:rightBorder type="SOLID" width="0.12 mm" color="#000000"/>
-<hh:topBorder type="SOLID" width="0.12 mm" color="#000000"/>
-<hh:bottomBorder type="SOLID" width="0.12 mm" color="#000000"/>
-<hh:diagonal type="SOLID" width="0.1 mm" color="#000000"/>
+${hwpxBorder('leftBorder', border)}
+${hwpxBorder('rightBorder', border)}
+${hwpxBorder('topBorder', border)}
+${hwpxBorder('bottomBorder', border)}
+<hh:diagonal type="NONE" width="0.1 mm" color="#000000"/>
 <hc:fillBrush>
 <hc:winBrush faceColor="${fill ?? 'none'}" hatchColor="#000000" alpha="0"/>
 </hc:fillBrush>
 </hh:borderFill>`
+
+/**
+ * 목록 정의. 실물 한글 문서(공공기관 배포 hwpx)가 저장한 `hh:numbering`을 그대로 본떴다 —
+ * 속성 이름·값, `charPrIDRef="4294967295"`(= -1, 문단 글자모양 상속), `^n` 치환 문법까지.
+ *
+ * `hh:paraHead`의 level은 **1부터**인데 `hh:heading`의 level은 **0부터**다(같은 골든 파일에서
+ * 확인). 헷갈리기 쉬운 자리라 여기 한 번만 변환한다.
+ *
+ * 글머리표는 `hh:bullets`라는 별도 테이블이 OWPML에 있지만 **실물로 확인한 적이 없어서**
+ * 쓰지 않는다. 대신 번호 서식 문자열에 `^n` 없이 글머리표 문자만 적는다 — 셀 것이 없으니
+ * 번호는 안 나오고 문자만 남는다. 스키마상으로는 그냥 문자열이라 파일이 안 열릴 위험이 없다.
+ * (`hh:bullets`를 쓰는 golden file이 생기면 갈아탄다.)
+ */
+const PARA_HEAD = (level: number, numFormat: string, text: string) =>
+  `<hh:paraHead start="1" level="${level}" align="LEFT" useInstWidth="1" autoIndent="0" widthAdjust="0" ` +
+  `textOffsetType="PERCENT" textOffset="50" numFormat="${numFormat}" charPrIDRef="4294967295" checkable="0">` +
+  `${esc(text)}</hh:paraHead>`
+
+const NUMBERING_TMPL = (id: number, levels: IrListMarker[]) => {
+  const heads: string[] = []
+  for (let i = 0; i < 10; i++) {
+    // 정의보다 깊은 수준은 마지막 표시를 반복한다 (한글은 10수준을 모두 요구한다)
+    const marker = levels[Math.min(i, levels.length - 1)] ?? 'bullet'
+    heads.push(PARA_HEAD(i + 1, 'DIGIT', marker === 'decimal' ? `^${i + 1}.` : bulletChar(i)))
+  }
+  return `<hh:numbering id="${id}" start="0">${heads.join('')}</hh:numbering>`
+}
+
+/**
+ * 개요 번호 정의. `HANGUL_SYLLABLE`(가·나·다)도 `^n` 치환도 실물 한글 문서에서 확인한 값이다 —
+ * 골든 파일의 numbering이 정확히 `^1.` DIGIT → `^2.` HANGUL_SYLLABLE → `^3)` DIGIT 순서였다.
+ * 우리 기본 스킴(OUTLINE_SCHEME)이 한글 공문서 관행과 같아서 그대로 겹친다.
+ */
+const OUTLINE_TMPL = (id: number) => {
+  const heads: string[] = []
+  for (let i = 0; i < 10; i++) {
+    const lv = OUTLINE_SCHEME[Math.min(i, OUTLINE_SCHEME.length - 1)]
+    heads.push(
+      PARA_HEAD(
+        i + 1,
+        lv.style === 'hangul' ? 'HANGUL_SYLLABLE' : 'DIGIT',
+        `${lv.prefix}^${i + 1}${lv.suffix}`,
+      ),
+    )
+  }
+  return `<hh:numbering id="${id}" start="0">${heads.join('')}</hh:numbering>`
+}
+
+/**
+ * 문단이 붙을 번호 매김 — paraPr의 `hh:heading`이 가리킨다.
+ * `NUMBER`는 목록(문단 번호), `OUTLINE`은 제목(개요 번호). 둘 다 실물 hwpx에서 확인한 값.
+ */
+interface NumberingRef {
+  type: 'NUMBER' | 'OUTLINE'
+  id: number
+  /** 0부터 */
+  level: number
+}
 
 class HwpxWriter {
   private charPrs = new Map<string, number>()
@@ -115,6 +208,8 @@ class HwpxWriter {
   private newCharPrXml: string[] = []
   private newParaPrXml: string[] = []
   private newBorderFillXml: string[] = []
+  private newNumberingXml: string[] = []
+  private nextNumberingId: number
   private nextCharPrId: number
   private nextParaPrId: number
   private nextBorderFillId: number
@@ -132,6 +227,7 @@ class HwpxWriter {
     this.nextCharPrId = this.maxId(/<hh:charPr id="(\d+)"/g) + 1
     this.nextParaPrId = this.maxId(/<hh:paraPr id="(\d+)"/g) + 1
     this.nextBorderFillId = this.maxId(/<hh:borderFill id="(\d+)"/g) + 1
+    this.nextNumberingId = this.maxId(/<hh:numbering id="(\d+)"/g) + 1
     const base = headerXml.match(/<hh:paraPr id="0".*?<\/hh:paraPr>/s)
     if (!base) throw new Error('템플릿 header.xml에 paraPr id=0 없음')
     this.baseParaPrXml = base[0]
@@ -204,14 +300,21 @@ class HwpxWriter {
    * `<hc:intent>` 첫 줄 · `<hc:left>` 왼쪽 · `<hc:prev>`/`<hc:next>` 문단 앞뒤. 단위는 HWPUNIT(pt×100).
    * 템플릿에 이 다섯이 이미 있으므로 값만 갈아끼운다.
    */
-  paraPrId(align: string, lineHeight?: number | null, heading = false, margins?: ParaMargins): number {
+  paraPrId(
+    align: string,
+    lineHeight?: number | null,
+    heading = false,
+    margins?: ParaMargins,
+    numbering?: NumberingRef | null,
+  ): number {
     const horizontal = align === 'center' ? 'CENTER' : align === 'right' ? 'RIGHT' : 'LEFT'
     // CSS line-height 비율 ≈ 한글 줄간격 PERCENT (1.5 → 150%)
     const percent = lineHeight ? Math.round(lineHeight * 100) : heading ? Math.round(HEADING_SPACE.lineHeight * 100) : null
     const m = margins ?? { indentPt: 0, firstLinePt: 0, beforePt: 0, afterPt: 0 }
     const plainMargins = !m.indentPt && !m.firstLinePt && !m.beforePt && !m.afterPt
-    if (horizontal === 'LEFT' && percent === null && !heading && plainMargins) return 0
-    const key = `${horizontal}|${percent ?? ''}|${heading ? 'h' : ''}|${m.indentPt}|${m.firstLinePt}|${m.beforePt}|${m.afterPt}`
+    if (horizontal === 'LEFT' && percent === null && !heading && plainMargins && !numbering) return 0
+    const numKey = numbering ? `${numbering.type}:${numbering.id}:${numbering.level}` : ''
+    const key = `${horizontal}|${percent ?? ''}|${heading ? 'h' : ''}|${m.indentPt}|${m.firstLinePt}|${m.beforePt}|${m.afterPt}|${numKey}`
     let id = this.paraPrs.get(key)
     if (id === undefined) {
       id = this.nextParaPrId++
@@ -221,6 +324,12 @@ class HwpxWriter {
         .replace(/horizontal="[A-Z]+"/, `horizontal="${horizontal}"`)
       if (percent !== null)
         xml = xml.replace(/lineSpacing type="PERCENT" value="\d+"/g, `lineSpacing type="PERCENT" value="${percent}"`)
+      // 번호 매김에 묶는다. type/idRef/level 세 값의 의미는 실물 hwpx로 확인했다
+      if (numbering)
+        xml = xml.replace(
+          /<hh:heading type="[A-Z]+" idRef="\d+" level="\d+"\/>/,
+          `<hh:heading type="${numbering.type}" idRef="${numbering.id}" level="${numbering.level}"/>`,
+        )
       // 앞뒤 여백·들여쓰기는 IR이 준 값 그대로 (제목 기본값은 ir-model의 readPara가 채워 준다)
       xml = xml
         .replace(/(<hc:intent value=")-?\d+(")/g, `$1${hwpUnit(m.firstLinePt)}$2`)
@@ -232,13 +341,34 @@ class HwpxWriter {
     return id
   }
 
-  borderFillId(fillHex: string | null): number {
-    const key = fillHex ?? 'none'
+  /**
+   * 목록 정의 등록 → numbering id. 수준 구성이 같아도 **목록마다 새로 만든다** —
+   * 한글은 numbering id 단위로 번호를 세므로, 정의를 공유하면 둘째 목록이 1이 아니라
+   * 이어서 세기 시작한다. (같은 이유로 docx도 num을 인스턴스마다 만든다.)
+   */
+  numberingId(levels: IrListMarker[]): number {
+    const id = this.nextNumberingId++
+    this.newNumberingXml.push(NUMBERING_TMPL(id, levels))
+    return id
+  }
+
+  /** 개요 번호 정의 — 문서에 하나만 만든다 */
+  private outlineNum: number | null = null
+  outlineNumberingId(): number {
+    if (this.outlineNum === null) {
+      this.outlineNum = this.nextNumberingId++
+      this.newNumberingXml.push(OUTLINE_TMPL(this.outlineNum))
+    }
+    return this.outlineNum
+  }
+
+  borderFillId(fillHex: string | null, border: IrBorder | null = CELL_BORDER): number {
+    const key = `${fillHex ?? 'none'}|${border ? `${border.widthPt}:${border.style}:${border.color}` : 'none'}`
     let id = this.borderFills.get(key)
     if (id === undefined) {
       id = this.nextBorderFillId++
       this.borderFills.set(key, id)
-      this.newBorderFillXml.push(BORDERFILL_TMPL(id, fillHex))
+      this.newBorderFillXml.push(BORDERFILL_TMPL(id, fillHex, border))
     }
     return id
   }
@@ -252,6 +382,7 @@ class HwpxWriter {
       charPr: this.newCharPrXml.length,
       paraPr: this.newParaPrXml.length,
       borderFill: this.newBorderFillXml.length,
+      numbering: this.newNumberingXml.length,
     }
   }
 
@@ -286,6 +417,7 @@ class HwpxWriter {
     patch('</hh:charProperties>', this.newCharPrXml, 'charProperties')
     patch('</hh:paraProperties>', this.newParaPrXml, 'paraProperties')
     patch('</hh:borderFills>', this.newBorderFillXml, 'borderFills')
+    patch('</hh:numberings>', this.newNumberingXml, 'numberings')
     return xml
   }
 }
@@ -316,10 +448,40 @@ function charStyleOf(el: Element | null): CharStyle {
  * 문단 여백을 인라인 style에서 읽는다 (ir-model.readPara와 같은 규칙).
  * 제목은 IR에 안 적혀 있을 때만 뷰어 CSS와 같은 기본값으로 채운다 — 백엔드 셋이 같은 값을 내야 한다.
  */
-function marginsOf(p: Element, heading: boolean): ParaMargins {
+/** 블록으로 다루는 태그 — 나머지는 인라인이라 암묵 문단으로 묶인다 (ir-model의 BLOCK_TAGS와 같다) */
+const HWPX_BLOCK_TAGS = new Set([
+  'P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'LI', 'TABLE', 'UL', 'OL', 'DIV',
+  'DOC-FOOTNOTE', 'DOC-PAGEBREAK', 'DOC-HEADER', 'DOC-FOOTER',
+])
+
+/** 문단에 담길 만한 내용이 있나 (공백만이면 아니다) */
+function hasInlineContent(nodes: Node[]): boolean {
+  return nodes.some(
+    (n) =>
+      (n.textContent ?? '').trim() !== '' ||
+      (n.nodeType === 1 && ((n as Element).tagName === 'IMG' || (n as Element).tagName === 'BR')),
+  )
+}
+
+/** ul/ol 그루의 수준별 표시를 모은다 — 그 수준에 처음 나온 종류가 이긴다 */
+function listLevels(el: Element, level: number, out: IrListMarker[]): void {
+  const marker: IrListMarker = el.tagName === 'OL' ? 'decimal' : 'bullet'
+  for (const li of Array.from(el.children)) {
+    if (li.tagName !== 'LI') continue
+    if (out[level] === undefined) out[level] = marker
+    for (const child of Array.from(li.children)) {
+      if (child.tagName === 'UL' || child.tagName === 'OL') listLevels(child, level + 1, out)
+    }
+  }
+}
+
+function marginsOf(p: Element, heading: boolean, listLevel?: number): ParaMargins {
+  // 목록 항목의 기본 들여쓰기는 뷰어 CSS(수준마다 padding-left 24pt)와 같은 값이고,
+  // 번호·글머리표는 그 칸에 내어쓰기로 놓인다. IR에 값이 적혀 있으면 그쪽이 이긴다.
+  const listIndent = listLevel === undefined ? null : LIST_INDENT_PT * (listLevel + 1)
   return {
-    indentPt: ptOf(tdStyle(p, 'margin-left')) ?? 0,
-    firstLinePt: ptOf(tdStyle(p, 'text-indent')) ?? 0,
+    indentPt: ptOf(tdStyle(p, 'margin-left')) ?? listIndent ?? 0,
+    firstLinePt: ptOf(tdStyle(p, 'text-indent')) ?? (listIndent === null ? 0 : -LIST_INDENT_PT),
     beforePt: ptOf(tdStyle(p, 'margin-top')) ?? (heading ? HEADING_SPACE.beforePt : 0),
     afterPt: ptOf(tdStyle(p, 'margin-bottom')) ?? (heading ? HEADING_SPACE.afterPt : 0),
   }
@@ -367,6 +529,28 @@ function tdStyle(el: Element, prop: string): string | null {
 
 class SectionBuilder {
   private w: HwpxWriter
+  /**
+   * 머리말·꼬리말 → 구역 첫 문단의 run에 얹는 ctrl.
+   * 실물 한글 문서가 저장한 형태 그대로다 — `hp:footer id applyPageType` + 내용은 `hp:subList`.
+   * (조판이 페이지마다 복제한 사본은 `data-pg`가 붙어 있어 세지 않는다.)
+   */
+  headerFooterXml(sec: Element): string {
+    let out = ''
+    let id = 0
+    for (const tag of ['DOC-HEADER', 'DOC-FOOTER'] as const) {
+      const el = Array.from(sec.children).find((c) => c.tagName === tag && !c.hasAttribute('data-pg'))
+      if (!el) continue
+      const name = tag === 'DOC-HEADER' ? 'header' : 'footer'
+      const inst = this.w.nextObjId()
+      out +=
+        `<hp:run charPrIDRef="0"><hp:ctrl><hp:${name} id="${++id}" applyPageType="BOTH">` +
+        `<hp:subList id="${inst}" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="${name === 'header' ? 'TOP' : 'BOTTOM'}" ` +
+        `linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">` +
+        `${this.blockChildrenXml(el)}</hp:subList></hp:${name}></hp:ctrl></hp:run>`
+    }
+    return out
+  }
+
   /** doc-footnote id → 내용 요소 (본문 흐름에서 제외하고 참조 지점에 인라인 삽입) */
   footnotes = new Map<string, Element>()
 
@@ -375,19 +559,10 @@ class SectionBuilder {
   }
 
   /** <hp:t> 내용: 텍스트 + <br>→<hp:lineBreak/> */
-  private textXml(node: Node): string {
-    let out = ''
-    for (const child of Array.from(node.childNodes)) {
-      if (child.nodeType === 3) out += esc(child.textContent ?? '')
-      else if ((child as Element).tagName === 'BR') out += '<hp:lineBreak/>'
-      else out += this.textXml(child) // 중첩 인라인은 텍스트만 취함
-    }
-    return out
-  }
 
-  private runsXml(p: Element, defaultStyle?: CharStyle): string {
+  private runsXml(p: Element, defaultStyle?: CharStyle, only?: Node[]): string {
     const defaultCharPr = defaultStyle ? this.w.charPrId(defaultStyle) : 0
-    const runs = this.inlineRuns(p, defaultStyle ?? charStyleOf(null), defaultCharPr, null)
+    const runs = this.inlineRuns(p, defaultStyle ?? charStyleOf(null), defaultCharPr, null, only)
     return runs.length ? runs.join('') : `<hp:run charPrIDRef="${defaultCharPr}"><hp:t/></hp:run>`
   }
 
@@ -405,22 +580,27 @@ class SectionBuilder {
     inherited: CharStyle,
     defaultCharPr: number,
     vertAlign: 'super' | 'sub' | null,
+    only?: Node[],
   ): string[] {
     const runs: string[] = []
     /** 첨자가 걸려 있으면 기본 charPr을 그대로 못 쓴다 — 첨자를 얹은 것을 따로 등록한다 */
     const plainId = () => (vertAlign ? this.w.charPrId({ ...inherited, vertAlign }) : defaultCharPr)
 
-    for (const child of Array.from(parent.childNodes)) {
+    for (const child of only ?? Array.from(parent.childNodes)) {
       if (child.nodeType === 3) {
-        const t = child.textContent ?? ''
+        // 소스 들여쓰기는 글자가 아니다 — ir-model과 같은 규칙을 쓴다
+        const t = displayText(child)
         if (t) runs.push(`<hp:run charPrIDRef="${plainId()}"><hp:t>${esc(t)}</hp:t></hp:run>`)
         continue
       }
       if (child.nodeType !== 1) continue
       const el = child as Element
       if (el.tagName === 'SPAN') {
-        const id = this.w.charPrId({ ...charStyleOf(el), vertAlign })
-        runs.push(`<hp:run charPrIDRef="${id}"><hp:t>${this.textXml(el)}</hp:t></hp:run>`)
+        // **재귀한다.** 예전에는 span을 잎으로 보고 안쪽을 글자로만 긁었는데(textXml),
+        // 그러면 `<span>글 <sup><a data-fn-ref>…</sup> 글</span>` 같은 흔한 모양에서
+        // 각주·링크·쪽번호가 조용히 사라졌다. 스타일은 지금처럼 span의 것을 쓴다.
+        const style = { ...charStyleOf(el), vertAlign }
+        runs.push(...this.inlineRuns(el, style, this.w.charPrId(style), vertAlign))
       } else if (el.tagName === 'BR') {
         runs.push(`<hp:run charPrIDRef="${plainId()}"><hp:t><hp:lineBreak/></hp:t></hp:run>`)
       } else if (el.tagName === 'IMG') {
@@ -441,6 +621,16 @@ class SectionBuilder {
         } else {
           // 각주가 아닌 위/아래첨자
           runs.push(...this.inlineRuns(el, inherited, defaultCharPr, el.tagName === 'SUP' ? 'super' : 'sub'))
+        }
+      } else if (el.tagName === 'DOC-FIELD') {
+        // 쪽번호 — 실물 한글 꼬리말에서 확인한 형태 그대로.
+        // 전체 쪽수(`pages`)는 numType 값을 실물로 못 봐서 **쓰지 않는다**(강등).
+        if (el.getAttribute('data-kind') === 'page') {
+          runs.push(
+            `<hp:run charPrIDRef="${plainId()}"><hp:ctrl><hp:autoNum num="1" numType="PAGE">` +
+              `<hp:autoNumFormat type="DIGIT" userChar="" prefixChar="" suffixChar="" supscript="0"/>` +
+              `</hp:autoNum></hp:ctrl><hp:t/></hp:run>`,
+          )
         }
       } else if (el.tagName === 'A') {
         // 하이퍼링크 **강등**: 주소를 버리고 안쪽 내용만 살린다.
@@ -481,12 +671,33 @@ class SectionBuilder {
     )
   }
 
-  paragraphXml(p: Element, extraFirstRun = '', opts?: { pageBreak?: boolean; defaultStyle?: CharStyle }): string {
+  paragraphXml(
+    p: Element,
+    extraFirstRun = '',
+    opts?: { pageBreak?: boolean; defaultStyle?: CharStyle; list?: NumberingRef; only?: Node[] },
+  ): string {
     const align = tdStyle(p, 'text-align') ?? 'left'
     const lh = tdStyle(p, 'line-height')
-    const heading = /^H[1-6]$/.test(p.tagName)
-    const paraPr = this.w.paraPrId(align, lh ? parseFloat(lh) : null, heading, marginsOf(p, heading))
-    return `<hp:p paraPrIDRef="${paraPr}" styleIDRef="0" pageBreak="${opts?.pageBreak ? 1 : 0}" columnBreak="0" merged="0">${extraFirstRun}${this.runsXml(p, opts?.defaultStyle)}</hp:p>`
+    const m = /^H([1-6])$/.exec(p.tagName)
+    const heading = m !== null
+    // 제목이 개요 번호에 참여하면(`data-num`) 문서 하나뿐인 개요 정의에 묶는다
+    const outline =
+      m && p.getAttribute('data-num')
+        ? {
+            type: 'OUTLINE' as const,
+            id: this.w.outlineNumberingId(),
+            level: Math.min(Number(m[1]), OUTLINE_SCHEME.length) - 1,
+          }
+        : null
+    const numbering = opts?.list ?? outline
+    const paraPr = this.w.paraPrId(
+      align,
+      lh ? parseFloat(lh) : null,
+      heading,
+      marginsOf(p, heading, opts?.list?.level),
+      numbering,
+    )
+    return `<hp:p paraPrIDRef="${paraPr}" styleIDRef="0" pageBreak="${opts?.pageBreak ? 1 : 0}" columnBreak="0" merged="0">${extraFirstRun}${this.runsXml(p, opts?.defaultStyle, opts?.only)}</hp:p>`
   }
 
   /** rowspan/colspan 점유를 시뮬레이션해 colAddr 계산 */
@@ -511,13 +722,18 @@ class SectionBuilder {
         const wPt = ptOf(tdStyle(td, 'width')) ?? 100
         const hPt = ptOf(tdStyle(td, 'height')) ?? 15
         const bg = tdStyle(td, 'background')
-        const bfId = this.w.borderFillId(bg ? rgbToHex(bg) : null)
+        const rawBorder = tdStyle(td, 'border')
+        const bfId = this.w.borderFillId(
+          bg ? rgbToHex(bg) : null,
+          rawBorder === null ? CELL_BORDER : parseBorder(rawBorder),
+        )
+        const vAlign = (tdStyle(td, 'vertical-align') ?? CELL_VALIGN) as IrVAlign
         const [padT, padR, padB, padL] = paddingOf(td)
 
         const inner = this.blockChildrenXml(td)
         rowXml.push(
           `<hp:tc name="" header="0" hasMargin="0" protect="0" editable="0" dirty="0" borderFillIDRef="${bfId}">` +
-            `<hp:subList id="${this.w.nextObjId()}" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="CENTER" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">${inner}</hp:subList>` +
+            `<hp:subList id="${this.w.nextObjId()}" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="${HWPX_VALIGN[vAlign] ?? 'CENTER'}" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">${inner}</hp:subList>` +
             `<hp:cellAddr colAddr="${c}" rowAddr="${r}"/>` +
             `<hp:cellSpan colSpan="${colSpan}" rowSpan="${rowSpan}"/>` +
             `<hp:cellSz width="${Math.round(wPt * 100)}" height="${Math.round(hPt * 100)}"/>` +
@@ -549,13 +765,31 @@ class SectionBuilder {
 
   /** td/doc-section 공통: 블록 자식들(p, h1-6, ul/ol, doc-pagebreak, table) → 문단 XML 나열 */
   blockChildrenXml(container: Element, extraFirstRun = ''): string {
-    // 제목 강등 스타일: 진하게 + 수준별 크기 (IR 스펙 — 번호 스킴은 v0.3)
+    // 제목 강등 스타일: 진하게 + 수준별 크기 (IR 스펙 — 개요 번호는 data-num이 켠다)
     const HEADING_PT: Record<string, number> = { H1: 16, H2: 14, H3: 13, H4: 12, H5: 12, H6: 12 }
     const out: string[] = []
     let first = true
     let pendingBreak = false
 
-    for (const el of Array.from(container.children)) {
+    // 표 셀처럼 `<p>` 없이 글자를 바로 담은 컨테이너 — 브라우저는 익명 블록으로 그리는데
+    // 예전에는 여기서 통째로 버렸다(ir-model의 readBlocks와 같은 규칙으로 암묵 문단을 만든다).
+    let inline: Node[] = []
+    const flush = () => {
+      if (hasInlineContent(inline)) {
+        out.push(this.paragraphXml(container, first ? extraFirstRun : '', { pageBreak: pendingBreak, only: inline }))
+        first = false
+        pendingBreak = false
+      }
+      inline = []
+    }
+
+    for (const node of Array.from(container.childNodes)) {
+      if (node.nodeType !== 1 || !HWPX_BLOCK_TAGS.has((node as Element).tagName)) {
+        inline.push(node)
+        continue
+      }
+      flush()
+      const el = node as Element
       const injected = first ? extraFirstRun : ''
       const tag = el.tagName
 
@@ -564,6 +798,7 @@ class SectionBuilder {
         continue
       }
       if (tag === 'DOC-FOOTNOTE') continue // 참조 지점(sup>a)에서 인라인 처리됨
+      if (tag === 'DOC-HEADER' || tag === 'DOC-FOOTER') continue // 구역 첫 문단의 ctrl로 나간다
 
       if (tag === 'P' || tag in HEADING_PT) {
         const defaultStyle: CharStyle | undefined =
@@ -574,17 +809,28 @@ class SectionBuilder {
         first = false
         pendingBreak = false
       } else if (tag === 'UL' || tag === 'OL') {
-        // 목록 강등: 글머리표/번호를 텍스트 접두로 (한글 numbering 매핑은 v0.3)
-        let n = 0
-        for (const li of Array.from(el.children).filter((x) => x.tagName === 'LI')) {
-          n++
-          const prefix = tag === 'UL' ? '• ' : `${n}. `
-          out.push(
-            `<hp:p paraPrIDRef="0" styleIDRef="0" pageBreak="${pendingBreak ? 1 : 0}" columnBreak="0" merged="0">${first ? extraFirstRun : ''}<hp:run charPrIDRef="0"><hp:t>${esc(prefix)}</hp:t></hp:run>${this.runsXml(li)}</hp:p>`,
-          )
-          first = false
-          pendingBreak = false
+        // 목록 하나 = numbering 정의 하나. 정의가 문단보다 먼저 필요해서 수준을 먼저 훑는다.
+        const levels: IrListMarker[] = []
+        listLevels(el, 0, levels)
+        const numId = this.w.numberingId(levels)
+        const emit = (list: Element, level: number) => {
+          for (const li of Array.from(list.children)) {
+            if (li.tagName !== 'LI') continue
+            out.push(
+              this.paragraphXml(li, first ? extraFirstRun : '', {
+                pageBreak: pendingBreak,
+                list: { type: 'NUMBER', id: numId, level },
+              }),
+            )
+            first = false
+            pendingBreak = false
+            // 중첩 목록은 항목의 형제 문단으로 이어 붙인다 — 수준은 paraPr이 들고 있다
+            for (const child of Array.from(li.children)) {
+              if (child.tagName === 'UL' || child.tagName === 'OL') emit(child, level + 1)
+            }
+          }
         }
+        emit(el, 0)
       } else if (tag === 'TABLE') {
         // 표는 자체 문단의 run에 실린다. 첫 블록이면 페이지설정 run을 같은 문단에 이식.
         out.push(
@@ -594,6 +840,7 @@ class SectionBuilder {
         pendingBreak = false
       }
     }
+    flush()
     if (pendingBreak)
       out.push(`<hp:p paraPrIDRef="0" styleIDRef="0" pageBreak="1" columnBreak="0" merged="0"><hp:run charPrIDRef="0"><hp:t/></hp:run></hp:p>`)
     if (!out.length)
@@ -606,7 +853,7 @@ class SectionBuilder {
 
 export interface HwpxResult {
   data: Uint8Array
-  added: { charPr: number; paraPr: number; borderFill: number }
+  added: { charPr: number; paraPr: number; borderFill: number; numbering: number }
 }
 
 /**
@@ -668,7 +915,10 @@ export function html2hwpx(root: Element, template: Uint8Array, embed?: EmbeddedF
   const sections = Array.from(root.querySelectorAll('doc-section'))
   const container = sections.length ? sections[0] : root
   // v0: 다중 섹션은 첫 섹션의 페이지 설정으로 병합 (섹션별 secPr는 v0.3)
-  let body = builder.blockChildrenXml(container, patchPagePr(setupRun, container as Element))
+  // 페이지 설정 run 뒤에 머리말·꼬리말 ctrl을 같은(첫) 문단에 얹는다 — 실물 hwpx와 같은 자리
+  const firstRun =
+    patchPagePr(setupRun, container as Element) + builder.headerFooterXml(container as Element)
+  let body = builder.blockChildrenXml(container, firstRun)
   for (const extra of sections.slice(1)) {
     body += builder.blockChildrenXml(extra)
   }

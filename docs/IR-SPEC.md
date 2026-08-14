@@ -15,6 +15,9 @@ hwp 가져오기 ─┼─→ canonical IR(HTML) ─┼─→ docx (OOXML)
    규칙까지)이 이 문서에 정의되어야 한다. 매핑 없는 요소 추가 금지.
 2. **진실원은 의미, 렌더는 파생** — 수식의 진실원은 LaTeX, 개요번호의 진실원은 스킴 참조.
    렌더 결과(MathML, "1.2.3" 텍스트)는 파생물이며 저장하지 않는다.
+   개요 스킴의 진실원은 `ir-model.ts`의 `OUTLINE_SCHEME` 하나이고, 뷰어 CSS counter와
+   백엔드 셋의 numbering 정의가 **모두 그 배열에서 생성된다** — 갈라지면 화면 번호와
+   저장된 번호가 달라진다. `bun run outline-sim`이 어긋남을 잡는다.
 3. **스펙 = 계약 = 린터** — 이 문서의 어휘·규칙은 `src/lib/ir.ts`의 `validateIR()`와 항상
    일치해야 한다. 스펙 변경 없는 린터 변경 금지, 그 역도 금지.
 4. **IR 밖의 것은 불투명 보존** — 가져온 문서에서 IR로 표현 못 하는 요소는 변환하지 않고
@@ -37,15 +40,15 @@ hwp 가져오기 ─┼─→ canonical IR(HTML) ─┼─→ docx (OOXML)
 |---|---|---|
 | `<doc-section>` | 구역 = 페이지 설정 단위. 속성: `data-ir`(루트만), style(`width·min-height·padding`). WRITE는 템플릿 secPr 이식(자체 페이지 설정 생성은 v0.3) | ✅ RW |
 | `<p>` | 문단. style: `text-align` | ✅ RW |
-| `<h1>`–`<h6>` | 개요 수준 문단. WRITE는 크기·굵기 강등(h1=16pt…) — 번호 스킴은 v0.3 | ✅ 편집+WRITE |
-| `<ul>` `<ol>` `<li>` | 목록. `li`는 `data-id` 필수 블록. WRITE는 "• "/"n. " 텍스트 접두 강등 (한글 numbering 매핑은 v0.3) | ✅ 편집+WRITE |
+| `<h1>`–`<h6>` | 개요 수준 문단. 속성 `data-num`= 개요 번호 **스킴 이름**(지금은 `outline` 하나). 붙으면 세 포맷 모두 번호가 붙는다. WRITE는 크기·굵기도 강등(h1=16pt…) | ✅ 편집+WRITE |
+| `<ul>` `<ol>` `<li>` | 목록. `li`는 `data-id` 필수 블록. 중첩 허용(`li` 안에 `ul`/`ol`). WRITE는 세 포맷 모두 **진짜 numbering** — 문서 전역 정의 테이블 + 문단 바인딩. 표시는 뷰어(브라우저 기본)와 같게 `ol`=십진수, `ul`=`•`→`◦`→`▪` | ✅ 편집+WRITE |
 | `<table>` | 표. 중첩 허용. 자식은 `<tr>`(또는 투명 래퍼 `<tbody>`)만, `<tr>`의 자식은 `<td>`만. `<tbody>`는 HTML 파서가 자동 삽입하므로 속성 없는 투명 래퍼로 허용 — 직렬화 시에는 생략 | ✅ RW |
-| `<td>` | 셀. 속성: `colspan` `rowspan`, style: `width·height·padding·background` | ✅ RW |
+| `<td>` | 셀. 속성: `colspan` `rowspan`, style: `width·height·padding·background·**border**·**vertical-align**`. 블록(`p`…)을 담아도 되고 인라인 내용을 바로 담아도 된다(**암묵 문단**으로 읽힌다) | ✅ RW(테두리·정렬은 WRITE만) |
 | `<doc-footnote>` | 각주 내용. 속성: `id`(필수). 본문 `data-fn-ref`와 1:1 쌍. READ=fn/en 컨트롤 → 섹션 끝 블록(번호는 CSS counter 파생), WRITE=참조 지점의 `hp:footNote`+autoNum | ✅ RW |
 | `<doc-textbox>` | 글상자. 속성: `data-anchor`(`page`\|`para`), `data-wrap`(`square`\|`none`), style: `width·float` | 🔜 |
 | `<doc-eq>` | 수식(블록). 속성: `data-latex`(필수, 진실원) | 🔜 |
 | `<doc-pagebreak>` | 강제 페이지 나눔. WRITE = 다음 `hp:p`의 `pageBreak="1"` | ✅ 편집+WRITE |
-| `<doc-header>` / `<doc-footer>` | 머리말/꼬리말. `<doc-section>` 직계 자식으로만 | 🔜 |
+| `<doc-header>` / `<doc-footer>` | 머리말/꼬리말. `<doc-section>` 직계 자식으로만. 본문 흐름 밖이고 **페이지마다** 그려진다(조판이 복제하고 저장 전에 걷는다) | ✅ WRITE |
 
 ### 인라인 요소
 
@@ -55,8 +58,9 @@ hwp 가져오기 ─┼─→ canonical IR(HTML) ─┼─→ docx (OOXML)
 | `<br>` | 줄바꿈 (문단 내) | ✅ RW |
 | `<img>` | 이미지. 속성: `src`(data-URI) `alt`, style: `width·height`(pt). READ=BinData→base64, WRITE=zip `BinData/imgN.ext`+`hp:pic`. 브라우저 미지원 포맷(wmf/emf)은 자리표시 텍스트 강등 | ✅ RW |
 | `<sup>` `<sub>` | 위첨자·아래첨자. 속성 없음 | ✅ 편집+WRITE |
+| `<doc-field>` | 계산 필드. 속성 `data-kind`(`page`\|`pages`). **머리말·꼬리말 안에만.** 값은 저장하지 않는다 — 화면은 조판이, 파일은 각 포맷의 필드가 센다 | ✅ WRITE |
 | `<a href>` | 하이퍼링크. `http(s):`·`mailto:` 또는 문서 내 앵커 `#b<n>`. `href`와 `data-fn-ref` 동시 지정 금지 | ✅ 편집+WRITE(docx·odt) / hwpx 강등 |
-| `<sup><a data-fn-ref="…">` | 각주 참조. `doc-footnote`의 `id`를 가리킴 | 🔜 |
+| `<sup><a data-fn-ref="…">` | 각주 참조. `doc-footnote`의 `id`를 가리킴. **`<a>`는 비어 있다** — 번호는 뷰어 counter와 각 포맷의 각주 기능이 센다 | ✅ RW |
 
 ### 블록 주소 체계
 
@@ -70,8 +74,22 @@ hwp 가져오기 ─┼─→ canonical IR(HTML) ─┼─→ docx (OOXML)
 `font-style` · `font-weight` · `text-decoration`(underline·line-through) · `text-align` ·
 `line-height`(비율 → paraPr lineSpacing PERCENT×100) · `width`(pt|in) · `height`(pt) · `min-height`(in) ·
 `padding`(pt) · `background`(span=형광펜→charPr shadeColor, td=셀 배경→borderFill) · `float`(textbox만) ·
+`border`(td — `<굵기> <종류> <색>` 축약, `none` 가능. 종류는 solid·dashed·dotted·double) ·
+`vertical-align`(td — top·middle·bottom) ·
 `margin-left`(pt, 문단 들여쓰기) · `text-indent`(pt, 첫 줄 — **음수면 내어쓰기**) ·
 `margin-top`·`margin-bottom`(pt, 문단 앞뒤 여백)
+
+목록 항목의 들여쓰기는 IR에 적지 않는다 — **번호는 파생물**(규칙 2)이고 그 자리도 마찬가지라,
+수준마다 뷰어 CSS와 같은 `24pt`(`LIST_INDENT_PT`)를 백엔드가 계산한다. `li`에 `margin-left`를
+직접 쓰면 그쪽이 이긴다(단 odt는 ODF가 목록 수준 정의를 우선하므로 무시된다).
+
+**셀의 인라인 내용은 암묵 문단이 된다.** `<td>글자</td>`처럼 `<p>` 없이 넣어도 브라우저는
+익명 블록으로 그리므로, 리더도 문단 하나로 읽는다(`readBlocks`의 `flush`). 정렬·여백은
+컨테이너에서 가져온다. 예전에는 세 백엔드가 이 내용을 **통째로 버렸다**.
+
+**소스의 개행은 글자가 아니다.** 예쁘게 들여쓴 IR의 개행+들여쓰기는 브라우저가 안 보여주므로
+백엔드도 버린다(`displayText`) — 문단 처음·끝과 블록 자식(`ul`·`ol`·`table`) 옆의 공백은 삭제,
+그 밖의 개행은 공백 하나. 탭·연속 공백은 리더가 실어 오는 값이라 건드리지 않는다.
 
 문단 여백 4종은 `p`·`h1–h6`·`li`에만 쓴다. `margin-top`/`margin-bottom`이 생기면서
 제목 여백의 진실원이 `ir-model.ts`의 `HEADING_SPACE` 상수에서 **IR로 올라왔다** —
@@ -104,14 +122,19 @@ hwp 가져오기 ─┼─→ canonical IR(HTML) ─┼─→ docx (OOXML)
 | `p` + `text-align` | `<hp:p paraPrIDRef>` + paraPr `<hh:align horizontal>` (LEFT=id 0 재사용, CENTER/RIGHT는 복제 등록) ● | `<w:p><w:pPr><w:jc>` ● | — |
 | `span` 스타일 | `<hp:run charPrIDRef>` + `<hh:charPr height=pt×100 textColor>` + `<hh:bold/>` `<hh:italic/>` `<hh:underline type=BOTTOM>` ● | `<w:r><w:rPr>` (sz/color/b/i/u/rFonts) ● | — |
 | `br` | `<hp:t>` 안의 `<hp:lineBreak/>` ● | `<w:br/>` ● | — |
-| `h1–h6` | paraPr 개요수준 + numbering ◐ | `<w:pStyle Heading1-6>` + numPr ● | 번호 텍스트로 강등 |
+| `h1–h6` + `data-num` | 개요 numbering 등록 + paraPr `<hh:heading type="OUTLINE" idRef level>` ● | 개요 abstractNum(`multiLevelType=multilevel`, 한글 수준은 `numFmt=ganada`) + `<w:numPr>` ● | — |
+| `ul`/`ol`/`li` | `<hh:numbering id>` + `<hh:paraHead level numFormat>`(`^n.`), 문단은 paraPr의 `<hh:heading type="NUMBER" idRef level>` — 실물 한글 문서에서 확정 ● | `numbering.xml`의 `<w:abstractNum>`+`<w:num>`, 문단은 `<w:numPr><w:ilvl><w:numId>` ● | 글머리표는 `hh:bullets` 대신 번호 서식 문자열에 문자만 적는다(`hh:bullets`는 실물 미확인) |
 | `table/td` | 래퍼 `<hp:p>`의 run 안 `<hp:tbl rowCnt colCnt>` + `<hp:tc>`(subList/cellAddr/cellSpan/cellSz=pt×100) — colAddr은 rowspan 점유 시뮬레이션으로 계산 ● | `<w:tbl>/<w:tr>/<w:tc>` + gridSpan/vMerge ● | — |
 | `td` 배경 | borderFill 등록(`<hc:winBrush faceColor>`) + IDRef ● | `<w:shd w:fill>` ● | — |
-| `doc-footnote` | 각주 컨트롤 `<hp:footNote>` ◐ | `<w:footnoteReference>` + footnotes.xml ● | 문서 끝 미주→문단 |
+| `td` 테두리 | 같은 borderFill의 4변(`<hh:leftBorder type width color>`) — 종류 SOLID·DASH·DOT·DOUBLE_SLIM·NONE과 굵기 mm 값은 실물 hwpx에서 확인 ● | 셀마다 `<w:tcBorders>` (`w:sz`는 1/8pt, 없으면 `w:val="nil"`) ● | 굵기는 한글이 고르는 이산값(0.1·0.12·0.15…mm)으로 스냅 |
+| `td` 세로 정렬 | `<hp:subList vertAlign="TOP\|CENTER\|BOTTOM">` ● | `<w:vAlign>` (middle→center) ● | — |
+| `doc-footnote` | 각주 컨트롤 `<hp:footNote>` + `<hp:autoNum>` (참조 지점에 내용 인라인) ● | `<w:footnoteReference>` + footnotes.xml(구분선 -1·0 포함) ● / odt는 참조 지점의 `<text:note>` ● | — |
 | `doc-textbox` | 글상자 개체 (drawText 계열) ○ | `<wps:txbx><w:txbxContent>` ◐ | float div→인라인 표 1×1 |
 | `doc-eq` | `<hp:equation script>` — **한글 수식 스크립트** (LaTeX→변환기 자작 필요) ○ | `<m:oMath>` (OMML) — MathML→OMML 공식 XSLT 존재 ● | LaTeX 원문 텍스트로 강등 |
 | `doc-pagebreak` | 문단 pageBreak 속성 ◐ | `<w:br w:type="page">` ● | — |
-| `doc-header/footer` | 구역 머리말/꼬리말 컨트롤 ◐ | headerN.xml + `<w:headerReference>` ● | 삭제(경고) |
+| `doc-header/footer` | 첫 문단 run의 `<hp:ctrl><hp:header\|footer id applyPageType>` + `hp:subList` — 실물 한글 문서에서 확정 ● | header1.xml·footer1.xml + `<w:headerReference>` ● / odt는 master-page의 `<style:header>` ● | — |
+| `doc-field page` | `<hp:autoNum num="1" numType="PAGE">` + `autoNumFormat` — 실물 확정 ● | `<w:fldSimple w:instr=" PAGE ">` ● / odt `<text:page-number>` ● | — |
+| `doc-field pages` | **강등** — 전체 쪽수의 numType을 실물로 못 봤다. 추측해서 쓰지 않는다 | `NUMPAGES` ● / odt `<text:page-count>` ● | hwpx에서는 아무것도 안 나온다 |
 | `img` | `<hp:pic>` + BinData zip 항목 + manifest ◐ | `<w:drawing>` + media/ + rels ● | — |
 | `sup` / `sub` | `<hh:supscript/>` / `<hh:subscript/>` — charPr의 무속성 자식 (실물 샘플 + hwpxlib CharPr 확인) ● | `<w:vertAlign w:val="superscript\|subscript">` ● | — |
 | `a[href]` | `<hp:fieldBegin type="HYPERLINK">`…`<hp:fieldEnd/>` — 타입명은 hwpxlib `FieldType.HYPERLINK`로 확정됐으나 **`hp:stringParam name="Command"`의 문자열 문법이 미확인** ◐ | `<w:hyperlink r:id>` + document.xml.rels 관계 ● | **hwpx는 현재 강등**: 링크 텍스트만 남기고 주소를 버린다(밑줄·파랑 없이 원래 서식 유지). 주소를 지키려면 docx·odt로 저장 |
@@ -152,8 +175,10 @@ hwp 가져오기 ─┼─→ canonical IR(HTML) ─┼─→ docx (OOXML)
   (hwp·doc은 필드 구조라 미구현). 리더별 상태는 README "현재 지원 범위" 표를 본다.
   **남은 것**: hwpx 하이퍼링크 **쓰기** — 한글에서 링크 하나만 넣고 저장한 golden file로
   `Command` 문자열 문법을 확정해야 강등을 걷어낼 수 있다.
-- **v0.3 (다음)**: 목록 numbering(지금은 `"• "` 텍스트 강등) → 개요번호. 둘은 같은
-  전역 numbering 테이블을 쓰므로 이 순서를 지킨다. 이어서 표 셀 테두리·세로 정렬.
-- **v0.4**: 머리말/꼬리말 + `doc-field`(쪽번호). 새 개념(필드)이 들어오고 hwpx 매핑이
-  ◐라 golden file이 선행한다.
+- **v0.3 (진행 중)**: 목록 numbering ✅ · 개요 번호 ✅ — 둘 다 전역 정의 테이블 + 문단
+  바인딩으로 간다(`"• "` 텍스트 강등 제거, 중첩 수준 지원). 개요 스킴은 한글 공문서 관행
+  `1. → 가. → 1) → 가) → (1) → (가)`. 표 셀 테두리·세로 정렬 ✅. 각주 쓰기 3종 + 삽입 UI ✅.
+- **v0.4**: 머리말/꼬리말 + `doc-field`(쪽번호) ✅ — hwpx 매핑은 실물 한글 문서에서 확정했다.
+  남은 것은 전체 쪽수(`pages`)의 hwpx numType과 **읽기**(리더가 머리말·꼬리말 영역을
+  아직 안 본다).
 - **v0.5+**: 수식(LaTeX→한글수식 변환기)·글상자·단(열)·목차. 보존-패치 아키텍처.

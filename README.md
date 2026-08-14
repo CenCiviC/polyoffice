@@ -70,6 +70,13 @@ bun run export <ir.html> [out-dir]  # 반대 방향 — 손으로 쓴 IR HTML �
 bun run matrix [out-dir]            # SOT 한 장 → 전 포맷 쓰기 → 되읽기 왕복 대조
 bun run page-sim                    # 페이지 설정 읽기·쓰기 왕복 + 백엔드 도달 검증
 bun run vocab-sim                   # IR v0.2 어휘(링크·첨자·문단여백) 계약 + 쓰기 3종 검증
+bun run list-sim                    # 목록 numbering — 정의 테이블·중첩 수준·번호 재시작 검증
+bun run outline-sim                 # 개요 번호 — 스킴 진실원(뷰어 CSS ↔ 백엔드 3종) 일치 검증
+bun run cell-sim                    # 표 셀 테두리·세로 정렬 — 셀마다 다른 서식이 3종에 도달하는지
+bun run footnote-sim                # 각주 — 내용 보존 + 번호를 저장하지 않는지 (3종)
+bun run hf-sim                      # 머리말·꼬리말·쪽번호 — 본문 밖 유지 + 조판 사본 걷기
+bun run mcp                         # MCP 서버 (stdio) — 프롬프트에서 문서 만들기
+bun run mcp-sim                     # MCP 왕복 검증 (도구 5종 + dev 서버 + 편집기 링크)
 bun run shots [문서] [출력]          # 진짜 Chrome에 편집기를 띄워 화면 캡처 (dev 서버 먼저)
 bun run compare <input.hwp>         # Rust WASM vs hwp.js 파서 골든 비교
 bun run wasm:build                  # Rust 파서 재빌드 (rust/hwp-core 수정 후)
@@ -78,6 +85,49 @@ cd rust/hwp-core && cargo test      # Rust 파서 유닛/통합 테스트
 # docx/odt 회귀 픽스처 재생성 (서식 값을 아는 최소 문서)
 python3 scripts/make-office-fixtures.py rust/hwp-core/tests/fixtures
 ```
+
+## MCP — 프롬프트에서 문서 만들기
+
+`mcp/server.ts`는 이 변환기를 **MCP 도구**로 내보낸다. "이 내용으로 한글 문서 만들어줘"
+한 마디로 .hwpx·.docx·.odt가 생기고, 브라우저에 편집기가 뜬다.
+
+전부 이 컴퓨터 안에서 돈다 — 문서도 뷰어(로컬 vite dev 서버)도 로컬이라
+"파일이 서버로 안 올라간다"는 전제가 그대로다.
+
+| 도구 | 하는 일 |
+|---|---|
+| `narro_guide` | IR 어휘 설명서([IR-AUTHORING.md](docs/IR-AUTHORING.md))를 돌려준다. 문서를 쓰기 전에 먼저 부른다 |
+| `narro_write` | IR HTML → hwpx·docx·odt + 편집기 링크. 만든 파일을 곧바로 되읽어 텍스트를 대조한다 |
+| `narro_read` | 기존 hwp·doc·hwpx·docx·odt → IR HTML. 고쳐서 다시 `narro_write`에 넣으면 편집 |
+| `narro_open` | 이미 있는 문서를 편집기로 열기 |
+| `narro_viewer` | 로컬 dev 서버 상태·시작·정지 |
+
+**어려운 건 파일 만들기가 아니라 IR 어휘로 정확히 쓰는 일**이라, 설명서를 툴 description에
+욱여넣는 대신 `narro_guide`라는 도구로 분리했다. 스키마는 가볍게 유지되고, 필요할 때만
+컨텍스트를 쓴다.
+
+`narro_write`가 어휘를 벗어난 HTML을 받으면 파일을 만들지 않고 **위반 목록을 오류로**
+돌려준다(`validateIR`의 규칙 이름·경로 그대로). 부르는 쪽이 고쳐서 다시 부르면 된다.
+
+### 붙이기
+
+Claude Code는 레포의 `.mcp.json`을 그대로 읽는다 — 프로젝트를 열고 승인하면 끝.
+다른 클라이언트(Claude Desktop·Cursor)는 설정에 이렇게 넣는다:
+
+```json
+{
+  "mcpServers": {
+    "narro": { "command": "bun", "args": ["run", "/절대경로/hwp2html/mcp/server.ts"] }
+  }
+}
+```
+
+### 뷰어
+
+`narro_write`는 결과를 `public/scratch/<이름>/`에 놓고 `localhost:5173/?doc=/scratch/…`를
+돌려준다. dev 서버가 이미 떠 있으면 붙고, 없으면 띄운다(우리가 띄운 것만 우리가 끈다).
+`public/` 밑에 두는 이유는 `App.tsx`의 `?doc=`이 `fetch`라 `file://`로는 안 열리고
+http 오리진이 필요하기 때문이다. `out_dir`을 주면 원하는 폴더에 사본도 남긴다.
 
 ## 현재 지원 범위
 
@@ -90,8 +140,33 @@ DOM 해석은 `src/lib/ir-model.ts`가 한 번만 하고(중립 문서 트리), 
 - `html2odt.ts` — ODF. 서식을 인라인으로 못 쓰기 때문에 자동 스타일로 모아 등록한다
 
 공통 지원: 문단 정렬 · 글자스타일(크기/색/굵기/기울임/밑줄/취소선/글꼴/**위·아래첨자**) ·
-**문단 여백**(들여쓰기·첫 줄·앞뒤) · **하이퍼링크**(docx·odt) · 표(가로·세로 병합,
-열 폭, 셀 배경) · 그림(바이트 그대로). 앱에서는 `.hwpx 저장` 버튼과 `docx`·`odt` 보조 버튼.
+**문단 여백**(들여쓰기·첫 줄·앞뒤) · **하이퍼링크**(docx·odt) · **목록**(번호·글머리표, 중첩) ·
+**개요 번호**(제목에 `1. 가. 1)`) ·
+표(가로·세로 병합, 열 폭, **셀 배경·테두리·세로 정렬**) · **각주** ·
+**머리말·꼬리말·쪽번호** · 그림(바이트 그대로).
+앱에서는 `.hwpx 저장` 버튼과 `docx`·`odt` 보조 버튼.
+
+**목록은 진짜 목록으로 나간다.** 예전에는 `"• "`/`"1. "`를 본문 글자로 박아서, 한글·Word에서
+목록처럼 보이기만 하고 항목을 추가해도 기호가 안 붙었다. 지금은 세 포맷 모두 문서 전역
+numbering 정의(docx `numbering.xml` · odt `text:list-style` · hwpx `hh:numbering`)를 만들고
+문단을 거기 묶는다. 목록마다 정의를 새로 만드는데, 세 포맷 다 **정의 단위로 번호를 세기**
+때문에 공유하면 둘째 목록이 1이 아니라 이어서 센다. hwpx 쪽 문법(`heading type="NUMBER"`,
+`paraHead`의 `^n` 치환)은 추측이 아니라 **한글이 저장한 실물 hwpx에서 확정**했다.
+
+**개요 번호**도 같은 인프라 위에 있다. 제목에 `data-num="outline"`이 붙으면 한글 공문서 관행
+`1. → 가. → 1) → 가) → (1) → (가)`으로 번호가 붙는다. 번호 자체는 **어디에도 저장하지 않는다**
+— 화면은 뷰어 CSS counter가, 파일은 각 포맷의 numbering 정의가 센다. 둘이 갈라지지 않도록
+스킴의 진실원은 `ir-model.ts`의 `OUTLINE_SCHEME` 배열 하나이고, 뷰어 CSS도 그 배열에서
+생성된다(`bun run outline-sim`이 어긋남을 잡는다).
+
+**각주와 머리말·꼬리말**도 같은 원칙이다. 각주 참조의 `<a>`는 비어 있고, 쪽번호는
+`<doc-field data-kind="page">`라는 **종류만** 담는다 — 숫자는 화면에서는 조판이,
+파일에서는 각 포맷의 필드(hwpx `hp:autoNum` · docx `PAGE` · odt `text:page-number`)가 센다.
+머리말·꼬리말은 조판이 페이지마다 복제해 그리고 저장 직전 `unpaginate`가 걷어낸다 —
+안 걷으면 저장물에 페이지 수만큼 중복된다.
+
+hwpx의 각주·머리말·꼬리말·쪽번호 매핑도 **실물 한글 문서에서 확정**했다. 전체 쪽수만
+`numType` 값을 못 봐서 강등 상태다(docx·odt로 저장하면 나온다).
 
 **하이퍼링크는 hwpx에서만 강등된다** — 주소를 버리고 글자만 남긴다. OWPML의
 `fieldBegin type="HYPERLINK"`는 [hwpxlib](https://github.com/neolord0/hwpxlib)의 `FieldType`으로
@@ -217,10 +292,20 @@ src/App.tsx           # 드롭존 → 미리보기(iframe srcDoc) / 소스 보�
 scripts/convert.ts    # CLI — 같은 변환기를 bun에서 실행 (E2E 검증용)
 scripts/validate.ts   # CLI — 변환 결과의 IR 계약 검증 (CI 게이트용)
 scripts/tohwpx.ts     # CLI — hwp→IR→hwpx 왕복 + XML/텍스트/zip 규칙 검증
+scripts/doc-core.ts   # IR HTML ↔ 문서 바이트 — CLI와 MCP 서버가 공유하는 코어 (경로·출력 없음)
 scripts/export.ts     # CLI — 손으로 쓴 IR HTML → hwpx·docx·odt (린터 게이트 + 되읽기 대조)
 scripts/matrix.ts     # CLI — SOT 한 장으로 전 포맷 쓰기·되읽기 대조 (변환 매트릭스)
 scripts/page-setup-sim.ts # CLI — 페이지 설정 왕복 + 규격 밖 용지 처리 검증
 scripts/vocab-sim.ts  # CLI — IR v0.2 어휘(링크·첨자·문단여백) 계약 + 쓰기 3종 검증
+scripts/list-sim.ts   # CLI — 목록 numbering 계약 + 쓰기 3종 (정의 테이블·중첩·번호 재시작)
+scripts/outline-sim.ts # CLI — 개요 번호 계약 + 스킴 진실원 일치(뷰어 CSS ↔ 백엔드 3종)
+scripts/cell-sim.ts   # CLI — 표 셀 테두리·세로 정렬이 셀마다 3종에 도달하는지
+scripts/footnote-sim.ts # CLI — 각주 내용 보존 + 번호 비저장 (쓰기 3종)
+scripts/headerfooter-sim.ts # CLI — 머리말·꼬리말·쪽번호 (본문 밖 유지 + 조판 사본 걷기)
 scripts/shots.ts      # CLI — 설치된 Chrome으로 편집기 화면 캡처 (눈으로 보는 검증)
+scripts/mcp-sim.ts    # CLI — 진짜 MCP 클라이언트로 서버 왕복 (도구 5종 + 편집기 링크)
+mcp/server.ts         # MCP(stdio) — narro_guide·write·read·open·viewer
+mcp/viewer.ts         # 로컬 dev 서버 찾기/띄우기 + public/scratch 발행
+docs/IR-AUTHORING.md  # 생성하는 쪽을 위한 IR 작성 설명서 (narro_guide가 그대로 돌려준다)
 scripts/probe*.ts     # hwp.js 파싱 탐색용 스크립트
 ```

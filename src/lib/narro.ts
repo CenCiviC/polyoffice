@@ -4,6 +4,7 @@
  * docs/IR-SPEC.md 어휘의 HTML을 생성한다.
  */
 import { IR_VERSION, isSafeHref } from './ir'
+import { CELL_BORDER, CELL_VALIGN, HANGUL_ORDINALS, HF_INSET_PT, OUTLINE_SCHEME } from './ir-model'
 import { ATTR } from './model'
 import type { DocModel, ParagraphModel, TableModel } from './model'
 import { parseHwpJs } from './parser-js'
@@ -49,20 +50,56 @@ const BASE_CSS = `
   /* 빈 문단은 한 줄 높이를 차지한다 (백엔드의 빈 문단과 같은 16pt) */
   .hwp-page p:empty { min-height: 1.6em; }
   table.hwp-table { border-collapse: collapse; margin: 2pt 0; }
-  table.hwp-table td { border: 1px solid #555; vertical-align: middle; }
+  /* 셀 기본 테두리·세로 정렬 — 백엔드 셋이 IR에 값이 없을 때 쓰는 것과 같은 상수에서 나온다 */
+  table.hwp-table td { border: ${CELL_BORDER.widthPt}pt ${CELL_BORDER.style} ${CELL_BORDER.color}; vertical-align: ${CELL_VALIGN}; }
   .hwp-page img { max-width: 100%; }
   .hwp-page h1, .hwp-page h2, .hwp-page h3, .hwp-page h4, .hwp-page h5, .hwp-page h6 { margin: 4pt 0 2pt; line-height: 1.4; }
   .hwp-page h1 { font-size: 16pt; } .hwp-page h2 { font-size: 14pt; } .hwp-page h3 { font-size: 13pt; }
   .hwp-page h4, .hwp-page h5, .hwp-page h6 { font-size: 12pt; }
   .hwp-page ul, .hwp-page ol { margin: 2pt 0; padding-left: 24pt; }
   .hwp-page li { min-height: 1em; line-height: 1.6; }
+  /* 머리말·꼬리말 — 본문 흐름 밖이라 여백 띠에 절대배치한다. 좌우는 inherit으로 구역의
+     안쪽 여백을 그대로 물려받아야 본문과 세로선이 맞는다(구역마다 여백이 다르다).
+     가장자리까지의 거리는 백엔드(docx w:pgMar header/footer)와 같은 상수를 쓴다. */
+  doc-header, doc-footer { display: block; position: absolute; left: 0; right: 0;
+    padding-left: inherit; padding-right: inherit; box-sizing: border-box;
+    font-size: 9pt; color: #5b6270; }
+  doc-header { top: ${HF_INSET_PT}pt; }
+  doc-footer { bottom: ${HF_INSET_PT}pt; }
+  doc-header p, doc-footer p { margin: 0; }
+  /* 쪽번호도 파생물이다 — 문서에는 종류만 있고 숫자는 여기서 센다.
+     전체 쪽수는 counter로 못 세서 조판(paginate)이 --pages에 채워 준다. */
+  body { counter-reset: pageno; }
+  doc-section { counter-increment: pageno; }
+  doc-field { display: inline; }
+  doc-field[data-kind="page"]::before { content: counter(pageno); }
+  doc-field[data-kind="pages"]::before { content: var(--pages, "?"); }
   doc-pagebreak { display: block; border-top: 2px dashed #b6bcc6; margin: 10pt 0; page-break-after: always; }
   @media print { doc-pagebreak { border: none; } }
   /* 하이퍼링크 — 색은 IR에 없고 여기서 칠한다. 백엔드 셋도 같은 값(LINK_COLOR)으로 칠해야
      화면과 저장물이 같아진다. 각주 참조(sup a[data-fn-ref])는 아래 규칙이 다시 덮는다. */
   .hwp-page a[href] { color: #1a4fd6; text-decoration: underline; text-underline-offset: 2px; }
   .hwp-page sup a { color: inherit; text-decoration: none; font-size: 0.75em; }
-  doc-section { counter-reset: fn; }
+  /* 개요 번호 — **번호는 IR에 없다**. 여기서 세고, 백엔드 셋은 같은 스킴(OUTLINE_SCHEME)으로
+     자기 포맷의 numbering 정의를 만든다. 화면과 저장물의 번호가 같아야 하므로 진실원은 하나다. */
+  @counter-style narro-hangul { system: alphabetic; symbols: ${HANGUL_ORDINALS.map((c) => `"${c}"`).join(' ')}; }
+${OUTLINE_SCHEME.map((lv, i) => {
+  const n = i + 1
+  const deeper = OUTLINE_SCHEME.slice(i + 1)
+    .map((_, k) => `o${i + k + 2}`)
+    .join(' ')
+  const counter = lv.style === 'hangul' ? `counter(o${n}, narro-hangul)` : `counter(o${n})`
+  const quote = (t: string) => (t ? ` "${t}"` : '')
+  return (
+    `  .hwp-page h${n}[data-num] { counter-increment: o${n};${deeper ? ` counter-reset: ${deeper};` : ''} }\n` +
+    `  .hwp-page h${n}[data-num]::before { content:${quote(lv.prefix)} ${counter}${quote(lv.suffix)} " "; }`
+  )
+}).join('\n')}
+  doc-section { counter-reset: fn fnref ${OUTLINE_SCHEME.map((_, i) => `o${i + 1}`).join(' ')}; }
+  /* 각주 참조 번호도 파생물이다 — 본문에는 빈 <a>만 있고 번호는 여기서 센다.
+     비어 있으면 클릭할 자리가 없으므로 최소 폭을 준다(편집기에서 캐럿이 들어갈 곳). */
+  .hwp-page sup a[data-fn-ref] { counter-increment: fnref; }
+  .hwp-page sup a[data-fn-ref]::before { content: counter(fnref) ")"; }
   doc-footnote { display: block; counter-increment: fn; font-size: 0.85em; color: #333;
     margin-top: 6pt; padding-top: 3pt; border-top: 1px solid #999; }
   doc-footnote:not(:first-of-type) { border-top: none; margin-top: 1pt; padding-top: 0; }
@@ -162,7 +199,9 @@ class Emitter {
         const n = ++this.fnSeq
         const content = fn.paragraphs.map((p) => this.paragraphHTML(p)).join('')
         this.fnBlocks.push(`<doc-footnote id="fn${n}" data-id="${this.nextId()}">${content}</doc-footnote>`)
-        return `<sup><a data-fn-ref="fn${n}">${n})</a></sup>`
+        // 번호는 담지 않는다 — 뷰어 CSS counter가 그린다(IR-SPEC 규칙 2).
+        // 중간에 각주를 하나 끼우면 뒤 번호가 전부 밀리는데, 그때 문서를 고쳐 쓰지 않으려는 것이다.
+        return `<sup><a data-fn-ref="fn${n}"></a></sup>`
       })
       .join('')
     const tables = para.tables.map((t) => this.tableHTML(t))

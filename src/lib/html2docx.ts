@@ -9,8 +9,20 @@
  */
 import { zipSync, strToU8 } from 'fflate'
 
-import type { IrBlock, IrCell, IrDoc, IrImage, IrPara, IrRun } from './ir-model'
-import { DEFAULT_LINE_HEIGHT, DOC_FONT, HEADING_SPACE, LINE_BREAK, LINK_COLOR, readIr, xmlSafe } from './ir-model'
+import type { IrBlock, IrBorder, IrCell, IrDoc, IrFootnote, IrImage, IrListDef, IrPara, IrRun } from './ir-model'
+import {
+  DEFAULT_LINE_HEIGHT,
+  DOC_FONT,
+  HEADING_SPACE,
+  LINE_BREAK,
+  LINK_COLOR,
+  HF_INSET_PT,
+  LIST_INDENT_PT,
+  OUTLINE_SCHEME,
+  bulletChar,
+  readIr,
+  xmlSafe,
+} from './ir-model'
 import { fontKeyFor, obfuscateFont, type EmbeddedFont } from './font-embed'
 
 /** 뷰어 CSS의 기본 글꼴 대체 사슬(Apple SD Gothic Neo → Malgun Gothic)에서 Word가 쓸 수 있는 것 */
@@ -22,7 +34,13 @@ const esc = (s: string) =>
 const twip = (pt: number) => Math.max(0, Math.round(pt * 20))
 const emu = (pt: number) => Math.max(0, Math.round(pt * 12700))
 
-const CONTENT_TYPES = (exts: string[], embedded: boolean) => `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+const CONTENT_TYPES = (
+  exts: string[],
+  embedded: boolean,
+  numbering: boolean,
+  footnotes: boolean,
+  hf: { header: boolean; footer: boolean },
+) => `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
 <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
 <Default Extension="xml" ContentType="application/xml"/>
@@ -30,6 +48,14 @@ ${exts.map((e) => `<Default Extension="${e}" ContentType="image/${e === 'jpg' ? 
 <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
 <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
 <Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/>${
+  numbering ? '<Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>' : ''
+}${
+  footnotes ? '<Override PartName="/word/footnotes.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml"/>' : ''
+}${
+  hf.header ? '<Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/>' : ''
+}${
+  hf.footer ? '<Override PartName="/word/footer1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"/>' : ''
+}${
   embedded ? '<Default Extension="odttf" ContentType="application/vnd.openxmlformats-officedocument.obfuscatedFont"/>' +
              '<Override PartName="/word/fontTable.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.fontTable+xml"/>' : ''
 }</Types>`
@@ -62,6 +88,32 @@ const indentXml = (indentPt: number, firstLinePt: number): string => {
   return attrs.length ? `<w:ind ${attrs.join(' ')}/>` : ''
 }
 
+/**
+ * 셀 테두리. OOXML의 `w:sz`는 **1/8pt 단위**라 pt×8, 색은 `#` 없는 6자리.
+ * 테두리가 없으면 `w:val="nil"` — 표 수준 `w:tblBorders`를 셀이 덮어써야 하기 때문에
+ * 생략이 아니라 명시적으로 없앤다.
+ */
+const DOCX_BORDER_STYLE: Record<IrBorder['style'], string> = {
+  solid: 'single',
+  dashed: 'dashed',
+  dotted: 'dotted',
+  double: 'double',
+}
+
+const tcBordersXml = (b: IrBorder | null): string => {
+  const one = b
+    ? `w:val="${DOCX_BORDER_STYLE[b.style]}" w:sz="${Math.max(1, Math.round(b.widthPt * 8))}" w:space="0" w:color="${b.color.slice(1)}"`
+    : 'w:val="nil"'
+  return `<w:tcBorders>${['top', 'left', 'bottom', 'right'].map((s) => `<w:${s} ${one}/>`).join('')}</w:tcBorders>`
+}
+
+const HEADER_REL = 'rId8'
+const FOOTER_REL = 'rId9'
+
+/** 머리말·꼬리말 파트 — 본문과 같은 문단 방출기를 쓴다 */
+const HEADER_FOOTER = (tag: 'hdr' | 'ftr', body: string) => `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:${tag} ${NS}>${body || '<w:p/>'}</w:${tag}>`
+
 /** OOXML의 색은 `#` 없는 6자리다 */
 const LINK_COLOR_HEX = LINK_COLOR.slice(1)
 
@@ -73,6 +125,66 @@ const STYLES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 </w:docDefaults>
 <w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/></w:style>
 </w:styles>`
+
+/**
+ * numbering.xml — 목록 정의 테이블. 이게 없으면 문단에 번호를 붙일 방법이 없어서
+ * 예전에는 `"• "`를 본문 글자로 박았다(그래서 Word에서 항목을 추가해도 기호가 안 붙었다).
+ *
+ * 목록 인스턴스 하나 = abstractNum 하나 + num 하나. num을 따로 두는 이유는 **번호 세는 단위가
+ * num**이기 때문 — 정의를 공유시키면 두 번째 목록이 1이 아니라 이어서 세기 시작한다.
+ *
+ * `w:lvlText`의 `%n`은 n번째 **수준의 현재 번호**다(1부터). 글머리표는 셀 것이 없으므로
+ * `numFmt="bullet"`에 문자를 그대로 적는다.
+ */
+const NUMBERING = (lists: IrListDef[], outlineId: number | null) => `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+${
+  outlineId === null
+    ? ''
+    : // 개요 번호는 문서에 하나. 들여쓰기를 주지 않는 이유는 뷰어가 `::before`로 제목 줄
+      // 앞에 그냥 붙여 그리기 때문 — 화면과 저장물이 같아야 한다.
+      `<w:abstractNum w:abstractNumId="${outlineId}"><w:multiLevelType w:val="multilevel"/>` +
+      OUTLINE_SCHEME.map(
+        (lv, i) =>
+          `<w:lvl w:ilvl="${i}"><w:start w:val="1"/>` +
+          `<w:numFmt w:val="${lv.style === 'hangul' ? 'ganada' : 'decimal'}"/>` +
+          `<w:lvlText w:val="${esc(`${lv.prefix}%${i + 1}${lv.suffix}`)}"/><w:lvlJc w:val="left"/>` +
+          `<w:pPr><w:ind w:left="0" w:hanging="0"/></w:pPr></w:lvl>`,
+      ).join('') +
+      `</w:abstractNum><w:num w:numId="${outlineId}"><w:abstractNumId w:val="${outlineId}"/></w:num>`
+}
+${lists
+  .map(
+    (list) =>
+      `<w:abstractNum w:abstractNumId="${list.id}"><w:multiLevelType w:val="${list.levels.length > 1 ? 'multilevel' : 'singleLevel'}"/>` +
+      list.levels
+        .map((marker, lv) => {
+          const [fmt, text] =
+            marker === 'decimal' ? ['decimal', `%${lv + 1}.`] : ['bullet', bulletChar(lv)]
+          return (
+            `<w:lvl w:ilvl="${lv}"><w:start w:val="1"/><w:numFmt w:val="${fmt}"/>` +
+            `<w:lvlText w:val="${esc(text)}"/><w:lvlJc w:val="left"/>` +
+            `<w:pPr><w:ind w:left="${twip(LIST_INDENT_PT * (lv + 1))}" w:hanging="${twip(LIST_INDENT_PT)}"/></w:pPr>` +
+            `</w:lvl>`
+          )
+        })
+        .join('') +
+      `</w:abstractNum>`,
+  )
+  .join('')}
+${lists.map((list) => `<w:num w:numId="${list.id}"><w:abstractNumId w:val="${list.id}"/></w:num>`).join('')}
+</w:numbering>`
+
+/**
+ * footnotes.xml. Word는 id -1(구분선)·0(이어짐 구분선) 두 개를 **먼저 요구한다** —
+ * 없어도 열리기는 하지만 각주 영역 위 가로선이 사라진다. 본문 각주는 1부터.
+ */
+const FOOTNOTES = (bodies: string[]) => `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:footnotes ${NS}>
+<w:footnote w:id="-1" w:type="separator"><w:p><w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr><w:r><w:separator/></w:r></w:p></w:footnote>
+<w:footnote w:id="0" w:type="continuationSeparator"><w:p><w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr><w:r><w:continuationSeparator/></w:r></w:p></w:footnote>
+${bodies.map((b, i) => `<w:footnote w:id="${i + 1}">${b || '<w:p/>'}</w:footnote>`).join('')}
+</w:footnotes>`
 
 /** 임베드한 글꼴을 실제로 쓰게 하는 선언 — 없으면 Word가 무시할 수 있다 */
 const SETTINGS = (embedded: boolean) => `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -93,6 +205,19 @@ const JC: Record<string, string> = { left: 'left', center: 'center', right: 'rig
 class DocxWriter {
   private media: { name: string; bytes: Uint8Array }[] = []
   private rels: string[] = []
+  /** 개요 번호 정의 id (없으면 null) — 제목 문단이 여기 묶인다 */
+  private outlineId: number | null
+  /** doc-footnote id → footnotes.xml의 w:id (1부터. -1·0은 구분선용 예약) */
+  private footnoteIds = new Map<string, number>()
+
+  constructor(outlineId: number | null, footnotes: IrFootnote[]) {
+    this.outlineId = outlineId
+    footnotes.forEach((fn, i) => this.footnoteIds.set(fn.id, i + 1))
+  }
+
+  footnoteId(ref: string): number | null {
+    return this.footnoteIds.get(ref) ?? null
+  }
 
   /** 그림을 패키지에 넣고 관계 id를 돌려준다 */
   imageRel(img: IrImage): string {
@@ -149,13 +274,17 @@ class DocxWriter {
     return [...new Set(this.media.map((m) => m.name.split('.').pop() as string))]
   }
 
-  documentRels(embedded = false) {
+  documentRels(embedded = false, numbering = false, footnotes = false, hf = { header: false, footer: false }) {
     // 그림 관계는 rId100부터라 부품 관계는 rId1~은 자유롭게 쓴다
     const R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
     const parts = [
       `<Relationship Id="rId1" Type="${R}/styles" Target="styles.xml"/>`,
       `<Relationship Id="rId4" Type="${R}/settings" Target="settings.xml"/>`,
     ]
+    if (numbering) parts.push(`<Relationship Id="rId6" Type="${R}/numbering" Target="numbering.xml"/>`)
+    if (footnotes) parts.push(`<Relationship Id="rId7" Type="${R}/footnotes" Target="footnotes.xml"/>`)
+    if (hf.header) parts.push(`<Relationship Id="${HEADER_REL}" Type="${R}/header" Target="header1.xml"/>`)
+    if (hf.footer) parts.push(`<Relationship Id="${FOOTER_REL}" Type="${R}/footer" Target="footer1.xml"/>`)
     // 글꼴 파트는 fontTable.xml의 관계다 — document.xml.rels가 아니라 fontTable.xml.rels에 들어간다
     if (embedded) parts.push(`<Relationship Id="rId5" Type="${R}/fontTable" Target="fontTable.xml"/>`)
     return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -163,6 +292,18 @@ class DocxWriter {
   }
 
   runXml(run: IrRun): string {
+    // 쪽번호 — 글자가 아니라 필드다. Word가 렌더할 때 센다.
+    // `w:fldSimple`은 문단 안에 바로 놓는 축약형이라 run 삼형제(begin/instrText/end)가 필요 없다.
+    if (run.field) {
+      const instr = run.field === 'pages' ? 'NUMPAGES' : 'PAGE'
+      return `<w:fldSimple w:instr=" ${instr}   \\* MERGEFORMAT "><w:r><w:t>1</w:t></w:r></w:fldSimple>`
+    }
+    // 각주 참조 — 글자가 아니라 참조다. 번호는 Word가 센다.
+    if (run.footnote) {
+      const id = this.footnoteId(run.footnote)
+      if (id === null) return ''
+      return `<w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:footnoteReference w:id="${id}"/></w:r>`
+    }
     const pr: string[] = []
     if (run.family) {
       const f = esc(run.family)
@@ -219,7 +360,14 @@ class DocxWriter {
     // 보다 30%쯤 커진다(맑은 고딕 기준 자연 줄높이 ≈ 1.33em). 브라우저와 같게 보이려면
     // 문단에서 가장 큰 글자 크기를 재서 pt로 못박는다. 그림·큰 글자가 잘리지 않게 atLeast.
     const maxPt = para.runs.reduce((m, r) => Math.max(m, r.sizePt), 0) || 10
-    const parts = [lineSpacingXml(maxPt, para.spaceBeforePt, para.spaceAfterPt, para.heading > 0)]
+    // CT_PPr는 순서가 정해진 sequence다 — numPr은 spacing보다 앞이다
+    const num = para.list
+      ? { ilvl: para.list.level, id: para.list.id }
+      : para.outline !== null && this.outlineId !== null
+        ? { ilvl: Math.min(para.outline, OUTLINE_SCHEME.length) - 1, id: this.outlineId }
+        : null
+    const parts = num ? [`<w:numPr><w:ilvl w:val="${num.ilvl}"/><w:numId w:val="${num.id}"/></w:numPr>`] : []
+    parts.push(lineSpacingXml(maxPt, para.spaceBeforePt, para.spaceAfterPt, para.heading > 0))
     if (jc && jc !== 'left') parts.push(`<w:jc w:val="${jc}"/>`)
     const ind = indentXml(para.indentPt, para.firstLinePt)
     if (ind) parts.push(ind)
@@ -254,9 +402,10 @@ class DocxWriter {
         const pr: string[] = [
           `<w:tcW w:type="dxa" w:w="${twip(cell.widthPt || colWidthsPt.slice(c, c + cell.colSpan).reduce((a, b) => a + (b || 0), 0) || 60)}"/>`,
         ]
-        // CT_TcPr 순서 고정: tcW → gridSpan → vMerge → shd → tcMar → vAlign
+        // CT_TcPr 순서 고정: tcW → gridSpan → vMerge → tcBorders → shd → tcMar → vAlign
         if (cell.colSpan > 1) pr.push(`<w:gridSpan w:val="${cell.colSpan}"/>`)
         if (cell.rowSpan > 1) pr.push('<w:vMerge w:val="restart"/>')
+        pr.push(tcBordersXml(cell.border))
         if (cell.background) pr.push(`<w:shd w:val="clear" w:color="auto" w:fill="${cell.background.slice(1)}"/>`)
         // tcMar를 안 쓰면 Word가 자기 기본 셀 여백(좌우 0.08in)을 넣는다 — 0이어도 명시한다
         const [mt, mr, mb, ml] = cell.paddingPt
@@ -264,8 +413,8 @@ class DocxWriter {
           `<w:tcMar><w:top w:type="dxa" w:w="${twip(mt)}"/><w:left w:type="dxa" w:w="${twip(ml)}"/>` +
             `<w:bottom w:type="dxa" w:w="${twip(mb)}"/><w:right w:type="dxa" w:w="${twip(mr)}"/></w:tcMar>`,
         )
-        // 뷰어 CSS는 td { vertical-align: middle } — Word 기본은 위 정렬이라 명시한다
-        pr.push('<w:vAlign w:val="center"/>')
+        // Word 기본은 위 정렬이라 항상 명시한다. OOXML은 middle을 center라 부른다
+        pr.push(`<w:vAlign w:val="${cell.vAlign === 'middle' ? 'center' : cell.vAlign}"/>`)
         const inner = this.blocksXml(cell.blocks, seq) || '<w:p/>'
         tcs.push(`<w:tc><w:tcPr>${pr.join('')}</w:tcPr>${inner}</w:tc>`)
         c += cell.colSpan
@@ -317,7 +466,7 @@ export interface DocxResult {
 /** IR HTML의 body → docx 바이트. embed를 주면 글꼴을 문서에 심는다. */
 export function html2docx(root: Element, embed?: EmbeddedFont): DocxResult {
   const doc: IrDoc = readIr(root)
-  const w = new DocxWriter()
+  const w = new DocxWriter(doc.outlineId, doc.footnotes)
   const seq = { n: 0 }
 
   // 구역이 여럿이면 페이지 나누기로 이어 붙인다 (docx 본문은 하나의 흐름)
@@ -327,23 +476,46 @@ export function html2docx(root: Element, embed?: EmbeddedFont): DocxResult {
   })
 
   const first = doc.sections[0]
+  const headerBody = first?.header ? w.blocksXml(first.header, seq) : null
+  const footerBody = first?.footer ? w.blocksXml(first.footer, seq) : null
+  const hfRefs =
+    (headerBody === null ? '' : `<w:headerReference w:type="default" r:id="${HEADER_REL}"/>`) +
+    (footerBody === null ? '' : `<w:footerReference w:type="default" r:id="${FOOTER_REL}"/>`)
   const sectPr =
-    `<w:sectPr><w:pgSz w:w="${twip(first?.widthPt ?? 595)}" w:h="${twip(first?.heightPt ?? 842)}"/>` +
+    `<w:sectPr>${hfRefs}<w:pgSz w:w="${twip(first?.widthPt ?? 595)}" w:h="${twip(first?.heightPt ?? 842)}"/>` +
     `<w:pgMar w:top="${twip(first?.padTopPt ?? 72)}" w:right="${twip(first?.padRightPt ?? 72)}" ` +
     `w:bottom="${twip(first?.padBottomPt ?? 72)}" w:left="${twip(first?.padLeftPt ?? 72)}" ` +
-    `w:header="708" w:footer="708" w:gutter="0"/></w:sectPr>`
+    `w:header="${twip(HF_INSET_PT)}" w:footer="${twip(HF_INSET_PT)}" w:gutter="0"/></w:sectPr>`
 
   const document = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document ${NS}><w:body>${bodies.join('')}${sectPr}</w:body></w:document>`
 
+  const hasLists = doc.lists.length > 0 || doc.outlineId !== null
+  const hasFootnotes = doc.footnotes.length > 0
+  // 각주 본문도 같은 방출기를 쓴다 — 본문 뒤에 만들어야 그림 관계 id가 겹치지 않는다
+  const footnoteBodies = doc.footnotes.map((fn) => w.blocksXml(fn.blocks, seq))
   const files: Record<string, Uint8Array> = {
-    '[Content_Types].xml': strToU8(CONTENT_TYPES(w.extensions(), !!embed)),
+    '[Content_Types].xml': strToU8(
+      CONTENT_TYPES(w.extensions(), !!embed, hasLists, hasFootnotes, {
+        header: headerBody !== null,
+        footer: footerBody !== null,
+      }),
+    ),
     '_rels/.rels': strToU8(ROOT_RELS),
     'word/document.xml': strToU8(document),
     'word/styles.xml': strToU8(STYLES),
     'word/settings.xml': strToU8(SETTINGS(!!embed)),
-    'word/_rels/document.xml.rels': strToU8(w.documentRels(!!embed)),
+    'word/_rels/document.xml.rels': strToU8(
+      w.documentRels(!!embed, hasLists, hasFootnotes, {
+        header: headerBody !== null,
+        footer: footerBody !== null,
+      }),
+    ),
   }
+  if (hasLists) files['word/numbering.xml'] = strToU8(NUMBERING(doc.lists, doc.outlineId))
+  if (hasFootnotes) files['word/footnotes.xml'] = strToU8(FOOTNOTES(footnoteBodies))
+  if (headerBody !== null) files['word/header1.xml'] = strToU8(HEADER_FOOTER('hdr', headerBody))
+  if (footerBody !== null) files['word/footer1.xml'] = strToU8(HEADER_FOOTER('ftr', footerBody))
   for (const m of w.mediaFiles()) files[`word/media/${m.name}`] = m.bytes
 
   // 글꼴 파트는 난독화된 .odttf로만 받아들여진다 (ECMA-376 §17.8.1)

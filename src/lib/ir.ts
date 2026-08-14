@@ -3,6 +3,8 @@
  * 스펙 변경 없는 이 파일의 변경 금지, 그 역도 금지.
  */
 
+import { FIELD_KINDS, OUTLINE_SCHEMES } from './ir-model'
+
 export const IR_VERSION = '0.2.0'
 
 /**
@@ -40,6 +42,7 @@ const ELEMENT_ATTRS: Record<string, Set<string>> = {
   'DOC-PAGEBREAK': new Set([]),
   'DOC-HEADER': new Set([]),
   'DOC-FOOTER': new Set([]),
+  'DOC-FIELD': new Set(['data-kind']),
   SPAN: new Set([]),
   BR: new Set([]),
   IMG: new Set(['src', 'alt']),
@@ -63,6 +66,9 @@ const STYLE_PROPS = new Set([
   'padding',
   'background',
   'float',
+  // 표 셀 — 테두리와 세로 정렬 (td에만)
+  'border',
+  'vertical-align',
   // 문단 여백 — p·h1~h6·li에만. text-indent가 음수면 내어쓰기.
   'margin-left',
   'text-indent',
@@ -72,6 +78,12 @@ const STYLE_PROPS = new Set([
 
 /** data-id가 필수인 콘텐츠 블록 */
 const ID_REQUIRED = new Set(['P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'LI', 'TABLE', 'DOC-FOOTNOTE', 'DOC-TEXTBOX', 'DOC-EQ'])
+
+/**
+ * 위 목록을 그대로 선택자로 쓴다. 손으로 적은 목록을 따로 두면 어긋난다 —
+ * 실제로 `doc-footnote`가 빠져 있어서 편집기로 각주를 넣으면 `block-id` 위반으로 저장이 막혔다.
+ */
+const ID_REQUIRED_SELECTOR = [...ID_REQUIRED].map((t) => t.toLowerCase()).join(', ')
 
 const COMMON_ATTRS = new Set(['data-id', 'style'])
 
@@ -159,7 +171,7 @@ export function normalizeIR(root: Element): void {
     const m = el.getAttribute('data-id')?.match(/^b(\d+)$/)
     if (m) max = Math.max(max, Number(m[1]))
   }
-  for (const el of Array.from(root.querySelectorAll('p, h1, h2, h3, h4, h5, h6, li, table'))) {
+  for (const el of Array.from(root.querySelectorAll(ID_REQUIRED_SELECTOR))) {
     if (!el.getAttribute('data-id')) el.setAttribute('data-id', `b${++max}`)
   }
 }
@@ -257,7 +269,7 @@ export function validateIR(root: Element): Violation[] {
     if ((tag === 'DOC-HEADER' || tag === 'DOC-FOOTER') && parentTag !== 'DOC-SECTION')
       violations.push({ rule: 'structure', message: `<${tag.toLowerCase()}>는 <doc-section> 직계여야 함`, path })
 
-    // 6. footnote-pair 수집 + 8. link-target
+    // 6. footnote-pair 수집 + 10. link-target
     if (tag === 'A') {
       const ref = el.getAttribute('data-fn-ref')
       if (ref) fnRefs.push(ref)
@@ -274,7 +286,31 @@ export function validateIR(root: Element): Violation[] {
       if (id) fnIds.add(id)
     }
 
-    // 7. eq-truth
+    // 7. field-kind — 쪽번호는 글자가 아니라 렌더 시점 계산값이다 (IR-SPEC 규칙 2)
+    if (tag === 'DOC-FIELD') {
+      const kind = el.getAttribute('data-kind')
+      if (!kind || !FIELD_KINDS.includes(kind as (typeof FIELD_KINDS)[number])) {
+        violations.push({
+          rule: 'field-kind',
+          message: `<doc-field>의 data-kind는 ${FIELD_KINDS.join('|')} 중 하나여야 한다 — 받은 값 "${kind ?? ''}"`,
+          path,
+        })
+      }
+      if (!el.closest('doc-header, doc-footer'))
+        violations.push({ rule: 'field-kind', message: '<doc-field>는 머리말·꼬리말 안에만 쓴다', path })
+    }
+
+    // 8. outline-scheme — data-num은 스킴 이름이지 번호가 아니다 (IR-SPEC 규칙 2)
+    const num = el.getAttribute('data-num')
+    if (num !== null && !OUTLINE_SCHEMES.includes(num as (typeof OUTLINE_SCHEMES)[number])) {
+      violations.push({
+        rule: 'outline-scheme',
+        message: `data-num은 스킴 이름이어야 한다 (${OUTLINE_SCHEMES.join('|')}) — 받은 값 "${num}"`,
+        path,
+      })
+    }
+
+    // 9. eq-truth
     if (tag === 'DOC-EQ' && !el.getAttribute('data-latex'))
       violations.push({ rule: 'eq-truth', message: '<doc-eq>에 data-latex 필수', path })
   }

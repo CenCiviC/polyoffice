@@ -6,6 +6,7 @@ import { html2odt } from './lib/html2odt'
 import { detectFonts, FONT_CANDIDATES, isSafeForExport } from './lib/fonts'
 import { isSafeHref, normalizeIR } from './lib/ir'
 import { mountTableUI, stripUi, TABLE_UI_CSS } from './lib/table-ui'
+import { CELL_BORDER, CELL_VALIGN, parseBorder, type IrBorder, type IrVAlign } from './lib/ir-model'
 import { paginateKeepingCaret, unpaginate } from './lib/paginate'
 import {
   DEFAULT_GEOM,
@@ -246,6 +247,22 @@ const TWO_UP_GAP = 20
 const TWO_UP_PAD = 12
 const SCROLLBAR = 16
 
+/**
+ * 참조가 사라진 각주 내용을 걷어낸다 — 워드·한글과 같은 동작이다.
+ *
+ * 참조를 지우는 경로가 여럿(백스페이스·잘라내기·문단 통째 삭제)이라 키를 가로채는 대신
+ * **편집이 끝난 뒤 짝을 맞춘다.** 어긋난 채로 저장되면 `validateIR`의 `footnote-pair`가
+ * 막아서므로, 여기서 정리하지 않으면 사용자가 이유를 모른 채 저장에 실패한다.
+ */
+function pruneFootnotes(doc: Document): void {
+  const bodies = doc.querySelectorAll('doc-footnote[id]')
+  if (!bodies.length) return
+  const refs = new Set(
+    Array.from(doc.querySelectorAll('[data-fn-ref]')).map((el) => el.getAttribute('data-fn-ref')),
+  )
+  for (const body of Array.from(bodies)) if (!refs.has(body.getAttribute('id'))) body.remove()
+}
+
 /** 선택 지점이 없을 때 블록을 떨굴 곳 — 첫 장이 아니라 마지막 장 끝 */
 const lastPage = (doc: Document): Element | null => {
   const pages = doc.querySelectorAll('doc-section')
@@ -330,6 +347,8 @@ export default function App() {
   const [zoom, setZoom] = useState(100)
   const [viewMode, setViewMode] = useState<ViewMode>('single')
   const [counts, setCounts] = useState({ pages: 0, chars: 0, charsNoSpace: 0, words: 0 })
+  const [cellOpen, setCellOpen] = useState(false)
+  const [cellInit, setCellInit] = useState<CellFormat>({ background: '', border: CELL_BORDER, vAlign: CELL_VALIGN })
   const [outlineOpen, setOutlineOpen] = useState(false)
   const [outline, setOutline] = useState<{ id: string; text: string; level: number }[]>([])
   const [pageOpen, setPageOpen] = useState(false)
@@ -713,6 +732,7 @@ export default function App() {
     doc.defaultView?.addEventListener('scroll', trackPage, { passive: true })
     doc.body.addEventListener('input', () => {
       setEdited(true)
+      pruneFootnotes(doc)
       recount()
     })
     // 붙여넣기 정제: 외부 HTML을 IR 인라인 어휘(span 스타일 + br)로 세탁해서 삽입
@@ -847,6 +867,24 @@ export default function App() {
     },
     [exec, recount],
   )
+
+  /**
+   * 개요 번호 토글: 현재 제목 블록의 `data-num`을 켜고 끈다.
+   * **번호 자체는 저장하지 않는다**(IR-SPEC 규칙 2) — 뷰어 CSS counter가 그리고,
+   * 저장할 때 백엔드 셋이 각자의 numbering 정의로 옮긴다.
+   */
+  const toggleOutlineNum = useCallback(() => {
+    const block = selectionBlock()
+    if (!block) return
+    if (!/^H[1-6]$/.test(block.tagName)) {
+      setError('개요 번호는 제목 문단에만 붙습니다 — 먼저 제목 스타일을 적용하세요.')
+      return
+    }
+    if (block.hasAttribute('data-num')) block.removeAttribute('data-num')
+    else block.setAttribute('data-num', 'outline')
+    recount()
+    // selectionBlock은 ref만 읽는 평범한 함수라 의존성에 넣지 않는다 (다른 토글들과 같다)
+  }, [recount])
 
   /** 목록 토글: 현재 블록을 ul/ol의 li로 감싸거나 해제 */
   const listOp = useCallback(
@@ -1011,6 +1049,43 @@ export default function App() {
     return (el?.closest('td') as HTMLTableCellElement) ?? null
   }
 
+  /**
+   * 셀 서식 열기 — 값은 **문서의 인라인 style에서** 읽는다. 백엔드가 읽는 것과 같은 자리라
+   * 다이얼로그가 보여주는 값과 저장될 값이 어긋나지 않는다(페이지 설정과 같은 원칙).
+   */
+  const openCellFormat = useCallback(() => {
+    const td = selectionCell()
+    if (!td) return
+    const raw = td.getAttribute('style') ?? ''
+    const prop = (name: string) => new RegExp(`(?:^|;)\\s*${name}\\s*:\\s*([^;]+)`).exec(raw)?.[1]?.trim() ?? null
+    const border = prop('border')
+    const va = prop('vertical-align')
+    setCellInit({
+      background: toHexColor(prop('background') ?? prop('background-color')) ?? '',
+      border: border === null ? CELL_BORDER : parseBorder(border),
+      vAlign: va === 'top' || va === 'bottom' || va === 'middle' ? va : CELL_VALIGN,
+    })
+    setCellOpen(true)
+  }, [])
+
+  const applyCellFormat = useCallback(
+    (v: CellFormat) => {
+      const td = selectionCell()
+      setCellOpen(false)
+      if (!td) return
+      if (v.background) td.style.background = v.background
+      else td.style.removeProperty('background')
+      // 기본값과 같으면 아예 적지 않는다 — IR은 기본값을 되풀이해 담지 않는다
+      if (v.border === null) td.style.border = 'none'
+      else if (sameBorder(v.border, CELL_BORDER)) td.style.removeProperty('border')
+      else td.style.border = `${v.border.widthPt}pt ${v.border.style} ${v.border.color}`
+      if (v.vAlign === CELL_VALIGN) td.style.removeProperty('vertical-align')
+      else td.style.verticalAlign = v.vAlign
+      recount()
+    },
+    [recount],
+  )
+
   const emptyCellLike = (src: HTMLTableCellElement): HTMLTableCellElement => {
     const td = src.cloneNode(false) as HTMLTableCellElement
     td.removeAttribute('colspan')
@@ -1151,6 +1226,93 @@ export default function App() {
     },
     [makeEditable, recount],
   )
+
+  /**
+   * 머리말·꼬리말 만들기 — 구역에 없으면 넣고, 있으면 그리로 커서를 옮긴다.
+   * 조판이 페이지마다 복제해 그리지만 **고칠 수 있는 건 첫 페이지의 원본 하나**다
+   * (사본은 `data-pg`가 붙고 저장 전에 걷힌다).
+   */
+  const insertHeaderFooter = useCallback(
+    (kind: 'doc-header' | 'doc-footer') => {
+      const doc = editorDoc()
+      if (!doc) return
+      const n = doc.getSelection()?.anchorNode
+      const at = n ? (n.nodeType === 1 ? (n as Element) : n.parentElement) : null
+      // 사본이 아니라 원본 구역에 넣는다
+      let section = at?.closest('doc-section') ?? lastPage(doc)
+      while (section?.hasAttribute('data-pg')) section = section.previousElementSibling
+      if (!section) return
+
+      let band = Array.from(section.children).find((c) => c.tagName === kind.toUpperCase() && !c.hasAttribute('data-pg'))
+      if (!band) {
+        band = doc.createElement(kind)
+        const p = doc.createElement('p')
+        p.setAttribute('style', 'text-align:center')
+        if (kind === 'doc-footer') {
+          const field = doc.createElement('doc-field')
+          field.setAttribute('data-kind', 'page')
+          p.appendChild(field)
+        } else {
+          p.textContent = '머리말'
+        }
+        band.appendChild(p)
+        // 구역 맨 앞에 — 본문 흐름 밖이지만 문서 순서로는 앞이 자연스럽다
+        section.insertBefore(band, section.firstChild)
+      }
+      const target = band.querySelector('p')
+      if (target) {
+        const range = doc.createRange()
+        range.selectNodeContents(target)
+        range.collapse(false)
+        const sel = doc.getSelection()
+        sel?.removeAllRanges()
+        sel?.addRange(range)
+      }
+      makeEditable(doc)
+      setEdited(true)
+      recount()
+    },
+    [makeEditable, recount],
+  )
+
+  /**
+   * 각주 삽입 — 캐럿 자리에 참조를, 그 구역 끝에 내용을 넣는다(IR의 쌍 규칙).
+   *
+   * **번호는 어디에도 적지 않는다.** 참조의 `<a>`는 비어 있고 번호는 뷰어 CSS counter가 그린다
+   * — 중간에 하나 끼워도 뒤 번호를 고쳐 쓸 일이 없다(IR-SPEC 규칙 2).
+   * 짝이 어긋나면 `validateIR`의 `footnote-pair`가 저장 전에 잡는다.
+   */
+  const insertFootnote = useCallback(() => {
+    const doc = editorDoc()
+    if (!doc) return
+    const n = doc.getSelection()?.anchorNode
+    const at = n ? (n.nodeType === 1 ? (n as Element) : n.parentElement) : null
+    const section = at?.closest('doc-section') ?? lastPage(doc)
+    if (!section) return
+
+    // 이미 쓰인 번호 다음 — 지웠다 다시 넣어도 id가 겹치지 않게 문서 전체에서 센다
+    let max = 0
+    for (const el of Array.from(doc.querySelectorAll('[data-fn-ref], doc-footnote[id]'))) {
+      const raw = el.getAttribute('data-fn-ref') ?? el.getAttribute('id') ?? ''
+      const m = /^fn(\d+)$/.exec(raw)
+      if (m) max = Math.max(max, Number(m[1]))
+    }
+    const id = `fn${max + 1}`
+
+    // 참조는 execCommand로 — 글자 편집과 같은 실행취소 기록에 쌓인다
+    doc.execCommand('insertHTML', false, `<sup><a data-fn-ref="${id}"></a></sup>`)
+
+    const body = doc.createElement('doc-footnote')
+    body.setAttribute('id', id)
+    const p = doc.createElement('p')
+    p.textContent = '각주 내용'
+    body.appendChild(p)
+    section.appendChild(body)
+
+    makeEditable(doc)
+    setEdited(true)
+    recount()
+  }, [makeEditable, recount])
 
   const insertTable = useCallback(() => {
     const doc = editorDoc()
@@ -1516,6 +1678,9 @@ export default function App() {
             <button title="번호 목록" onMouseDown={keepSelection} onClick={() => listOp('ol')}>
               1≡
             </button>
+            <button title="개요 번호 (제목에 1. 가. 1) …)" onMouseDown={keepSelection} onClick={toggleOutlineNum}>
+              1.가.
+            </button>
             <select
               title="줄간격"
               defaultValue=""
@@ -1554,6 +1719,15 @@ export default function App() {
             />
           </div>
           <div className="group">
+            <button title="각주 삽입" onMouseDown={keepSelection} onClick={insertFootnote}>
+              각주
+            </button>
+            <button title="머리말" onMouseDown={keepSelection} onClick={() => insertHeaderFooter('doc-header')}>
+              머리말
+            </button>
+            <button title="꼬리말 (쪽번호 포함)" onMouseDown={keepSelection} onClick={() => insertHeaderFooter('doc-footer')}>
+              꼬리말
+            </button>
             <button title="표 삽입" onMouseDown={keepSelection} onClick={insertTable}>
               {Icon.table}
             </button>
@@ -1581,6 +1755,9 @@ export default function App() {
             </button>
             <button title="병합 해제" onMouseDown={keepSelection} onClick={() => tableOp('unmerge')}>
               해제
+            </button>
+            <button title="셀 서식 (배경·테두리·세로 정렬)" onMouseDown={keepSelection} onClick={openCellFormat}>
+              셀
             </button>
               </>
             )}
@@ -1751,6 +1928,7 @@ export default function App() {
 
       {pageOpen && <PageSetupDialog geom={geom} onCancel={() => setPageOpen(false)} onApply={applyPageSetup} />}
       {linkOpen && <LinkDialog init={linkInit} onCancel={() => setLinkOpen(false)} onApply={applyLink} />}
+      {cellOpen && <CellFormatDialog init={cellInit} onCancel={() => setCellOpen(false)} onApply={applyCellFormat} />}
     </div>
   )
 }
@@ -1819,6 +1997,137 @@ function LinkDialog({
               ? `${normalized} 로 저장됩니다.`
               : 'docx·odt로 저장하면 링크가 그대로 살아 있습니다. hwpx는 아직 주소를 담지 못해 글자만 남습니다.'
             : '허용되지 않는 주소입니다 — https:· mailto: 또는 #b7 형태만 됩니다.'}
+      </p>
+    </Dialog>
+  )
+}
+
+interface CellFormat {
+  /** #RRGGBB 또는 '' (없음) */
+  background: string
+  /** null = 테두리 없음 */
+  border: IrBorder | null
+  vAlign: IrVAlign
+}
+
+const sameBorder = (a: IrBorder, b: IrBorder) =>
+  a.widthPt === b.widthPt && a.style === b.style && a.color.toLowerCase() === b.color.toLowerCase()
+
+/** rgb()·#abc·#aabbcc → #RRGGBB (없으면 null) */
+function toHexColor(v: string | null): string | null {
+  if (!v) return null
+  const rgb = /rgb\(\s*(\d+)\D+(\d+)\D+(\d+)/.exec(v)
+  if (rgb) return `#${[rgb[1], rgb[2], rgb[3]].map((n) => Number(n).toString(16).padStart(2, '0')).join('')}`
+  const hex = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(v.trim())
+  if (!hex) return null
+  const h = hex[1]
+  return `#${h.length === 3 ? [...h].map((c) => c + c).join('') : h}`.toLowerCase()
+}
+
+const BORDER_WIDTHS = [0.5, 0.75, 1, 1.5, 2, 3]
+
+/** 셀 서식 — 배경·테두리·세로 정렬. 값은 문서의 인라인 style에서 왔고 적용해야 돌아간다 */
+function CellFormatDialog({
+  init,
+  onCancel,
+  onApply,
+}: {
+  init: CellFormat
+  onCancel: () => void
+  onApply: (v: CellFormat) => void
+}) {
+  const [v, setV] = useState<CellFormat>(init)
+  const b = v.border
+  const patchBorder = (patch: Partial<IrBorder>) =>
+    setV({ ...v, border: { ...(b ?? CELL_BORDER), ...patch } })
+
+  return (
+    <Dialog
+      title="셀 서식"
+      onClose={onCancel}
+      footer={
+        <>
+          <button type="button" className="ghost" onClick={onCancel}>
+            취소
+          </button>
+          <button type="button" className="primary" onClick={() => onApply(v)}>
+            적용
+          </button>
+        </>
+      }
+    >
+      <div className="field">
+        <span className="field-label">배경</span>
+        <input
+          type="color"
+          aria-label="셀 배경색"
+          value={v.background || '#ffffff'}
+          onChange={(e) => setV({ ...v, background: e.target.value })}
+        />
+        <button type="button" className="ghost" onClick={() => setV({ ...v, background: '' })}>
+          없음
+        </button>
+      </div>
+
+      <div className="field">
+        <span className="field-label">테두리</span>
+        <Seg
+          value={b !== null}
+          options={[
+            { v: true, label: '있음' },
+            { v: false, label: '없음' },
+          ]}
+          onChange={(on) => setV({ ...v, border: on ? (b ?? CELL_BORDER) : null })}
+        />
+      </div>
+      {b && (
+        <div className="field">
+          <span className="field-label">모양</span>
+          <select
+            aria-label="테두리 종류"
+            value={b.style}
+            onChange={(e) => patchBorder({ style: e.target.value as IrBorder['style'] })}
+          >
+            <option value="solid">실선</option>
+            <option value="dashed">파선</option>
+            <option value="dotted">점선</option>
+            <option value="double">이중선</option>
+          </select>
+          <select
+            aria-label="테두리 굵기"
+            value={b.widthPt}
+            onChange={(e) => patchBorder({ widthPt: Number(e.target.value) })}
+          >
+            {BORDER_WIDTHS.map((w) => (
+              <option key={w} value={w}>
+                {w}pt
+              </option>
+            ))}
+          </select>
+          <input
+            type="color"
+            aria-label="테두리 색"
+            value={b.color}
+            onChange={(e) => patchBorder({ color: e.target.value })}
+          />
+        </div>
+      )}
+
+      <div className="field">
+        <span className="field-label">세로 정렬</span>
+        <Seg
+          value={v.vAlign}
+          options={[
+            { v: 'top' as IrVAlign, label: '위' },
+            { v: 'middle' as IrVAlign, label: '가운데' },
+            { v: 'bottom' as IrVAlign, label: '아래' },
+          ]}
+          onChange={(vAlign) => setV({ ...v, vAlign })}
+        />
+      </div>
+
+      <p className="dialog-note">
+        테두리 굵기는 한글이 고를 수 있는 값(0.1·0.12·0.15…mm)으로 맞춰 저장됩니다.
       </p>
     </Dialog>
   )

@@ -18,6 +18,11 @@
     "preview": "vite preview",
     "matrix": "bun run scripts/matrix.ts",
     "vocab-sim": "bun run scripts/vocab-sim.ts",
+    "list-sim": "bun run scripts/list-sim.ts",
+    "outline-sim": "bun run scripts/outline-sim.ts",
+    "cell-sim": "bun run scripts/cell-sim.ts",
+    "footnote-sim": "bun run scripts/footnote-sim.ts",
+    "hf-sim": "bun run scripts/headerfooter-sim.ts",
     "shots": "bun run scripts/shots.ts",
     "mcp": "bun run mcp/server.ts",
     "mcp-sim": "bun run scripts/mcp-sim.ts"

@@ -9,14 +9,29 @@
  */
 import { zipSync, strToU8 } from 'fflate'
 
-import type { IrBlock, IrCell, IrDoc, IrImage, IrPara, IrRun, IrStyle } from './ir-model'
-import { DEFAULT_LINE_HEIGHT, DOC_FONT, HEADING_SPACE, LINE_BREAK, LINK_COLOR, readIr, xmlSafe } from './ir-model'
+import type { IrBlock, IrBorder, IrCell, IrDoc, IrFootnote, IrImage, IrListDef, IrPara, IrRun, IrStyle } from './ir-model'
+import {
+  DEFAULT_LINE_HEIGHT,
+  DOC_FONT,
+  HEADING_SPACE,
+  LINE_BREAK,
+  LINK_COLOR,
+  HF_INSET_PT,
+  LIST_INDENT_PT,
+  OUTLINE_SCHEME,
+  bulletChar,
+  readIr,
+  xmlSafe,
+} from './ir-model'
 import type { EmbeddedFont } from './font-embed'
 
 const esc = (s: string) =>
   xmlSafe(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 
 const pt = (v: number) => `${(Math.round(v * 100) / 100).toFixed(2)}pt`
+
+/** ODF의 fo:border는 CSS와 문법이 같다 — 값이 없으면 'none' */
+const borderCss = (b: IrBorder | null) => (b ? `${pt(b.widthPt)} ${b.style} ${b.color}` : 'none')
 
 const NS = [
   'xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"',
@@ -30,12 +45,26 @@ const NS = [
 ].join(' ')
 
 class OdtWriter {
+  /** 목록 인스턴스 id → 정의 (수준별 표시를 꺼내 쓴다) */
+  private lists: Map<number, IrListDef>
+  /** doc-footnote id → 내용 (본문 흐름에서 빠지고 참조 지점에 통째로 들어간다) */
+  private footnotes: Map<string, IrFootnote>
+  /** 각주 번호 — ODF의 text:note-citation은 글자라서 여기서 센다 */
+  private fnSeq = 0
+
+  constructor(lists: IrListDef[], footnotes: IrFootnote[]) {
+    this.lists = new Map(lists.map((l) => [l.id, l]))
+    this.footnotes = new Map(footnotes.map((f) => [f.id, f]))
+  }
+
   /** 스타일 XML → 이름 (같은 서식은 한 번만 등록) */
   private textStyles = new Map<string, string>()
   private paraStyles = new Map<string, string>()
   private rowStyles = new Map<string, string>()
   private cellStyles = new Map<string, string>()
   private colStyles = new Map<string, string>()
+  /** 수준 서명("bullet,decimal") → 목록 스타일 이름 */
+  private listStyles = new Map<string, string>()
   private frameStyle = false
   pictures: { name: string; bytes: Uint8Array }[] = []
 
@@ -102,14 +131,50 @@ class OdtWriter {
     )
   }
 
-  cellStyle(background: string | null, padding: [number, number, number, number]): string {
-    const bg = background ? ` fo:background-color="${background}"` : ''
-    const [t, r, b, l] = padding
+  /**
+   * 목록 스타일. 수준 구성이 같은 목록끼리는 하나를 나눠 쓴다 —
+   * ODF는 번호를 `text:list` 요소마다 새로 세므로, 정의를 공유해도 목록이 이어지지 않는다.
+   *
+   * 들여쓰기는 문단 스타일이 아니라 **여기**에 적는다. label-alignment 모드에서는
+   * 수준 정의의 margin/indent가 문단 여백을 덮어쓰기 때문에 문단 쪽에 적으면 무시된다.
+   */
+  listStyle(def: IrListDef): string {
+    const sig = def.levels.join(',')
+    const found = this.listStyles.get(sig)
+    if (found) return found
+    const name = `L${this.listStyles.size + 1}`
+    this.listStyles.set(sig, name)
+    return name
+  }
+
+  private listStyleXml(sig: string, name: string): string {
+    const levels = sig.split(',')
+    const body = levels
+      .map((marker, i) => {
+        const left = LIST_INDENT_PT * (i + 1)
+        const align =
+          `<style:list-level-properties text:list-level-position-and-space-mode="label-alignment">` +
+          `<style:list-level-label-alignment text:label-followed-by="listtab" ` +
+          `text:list-tab-stop-position="${pt(left)}" fo:text-indent="${pt(-LIST_INDENT_PT)}" ` +
+          `fo:margin-left="${pt(left)}"/></style:list-level-properties>`
+        return marker === 'decimal'
+          ? `<text:list-level-style-number text:level="${i + 1}" style:num-format="1" style:num-suffix=".">${align}</text:list-level-style-number>`
+          : `<text:list-level-style-bullet text:level="${i + 1}" text:bullet-char="${esc(bulletChar(i))}">${align}</text:list-level-style-bullet>`
+      })
+      .join('')
+    return `<text:list-style style:name="${name}">${body}</text:list-style>`
+  }
+
+  cellStyle(cell: IrCell): string {
+    const bg = cell.background ? ` fo:background-color="${cell.background}"` : ''
+    const [t, r, b, l] = cell.paddingPt
+    // ODF의 세로 정렬은 middle이 아니라 'middle'/'top'/'bottom' — CSS와 이름이 같다
     return this.intern(
       this.cellStyles,
       'ce',
       `fo:padding-top="${pt(t)}" fo:padding-right="${pt(r)}" fo:padding-bottom="${pt(b)}" ` +
-        `fo:padding-left="${pt(l)}" fo:border="0.75pt solid #555555" style:vertical-align="middle"${bg}`,
+        `fo:padding-left="${pt(l)}" fo:border="${borderCss(cell.border)}" ` +
+        `style:vertical-align="${cell.vAlign}"${bg}`,
     )
   }
 
@@ -156,6 +221,7 @@ class OdtWriter {
         `<style:style style:name="${name}" style:family="table-column"><style:table-column-properties ${props}/></style:style>`,
       )
     }
+    for (const [sig, name] of this.listStyles) out.push(this.listStyleXml(sig, name))
     if (this.frameStyle) {
       out.push(
         `<style:style style:name="fr1" style:family="graphic"><style:graphic-properties ` +
@@ -167,6 +233,23 @@ class OdtWriter {
   }
 
   private runXml(run: IrRun): string {
+    // 쪽번호 — ODF는 전용 요소가 있다. 숫자는 열 때 계산된다
+    if (run.field)
+      return run.field === 'pages'
+        ? '<text:page-count>1</text:page-count>'
+        : '<text:page-number text:select-page="current">1</text:page-number>'
+    // 각주 — ODF는 별도 파트 없이 **참조 지점에 내용을 통째로** 넣는다
+    if (run.footnote) {
+      const fn = this.footnotes.get(run.footnote)
+      if (!fn) return ''
+      const n = ++this.fnSeq
+      const body = this.blocksXml(fn.blocks, { n: 0 }) || '<text:p/>'
+      return (
+        `<text:note text:id="${esc(run.footnote)}" text:note-class="footnote">` +
+        `<text:note-citation>${n}</text:note-citation>` +
+        `<text:note-body>${body}</text:note-body></text:note>`
+      )
+    }
     const name = this.textStyle(run)
     // 줄바꿈·탭은 전용 요소로 나가야 한다
     const body = run.text
@@ -213,6 +296,12 @@ class OdtWriter {
         )
       })
       .join('')
+    // 개요 번호에 참여하는 제목만 `text:h`로 낸다. ODF의 개요 번호는 `text:h`에만 붙고,
+    // 우리 IR은 제목마다 참여 여부를 고를 수 있어서(`data-num`) 참여하는 것만 승격한다.
+    if (para.outline !== null) {
+      const level = Math.min(para.outline, OUTLINE_SCHEME.length)
+      return `<text:h text:style-name="${style}" text:outline-level="${level}">${runs}${imgs}</text:h>`
+    }
     return `<text:p text:style-name="${style}">${runs}${imgs}</text:p>`
   }
 
@@ -239,7 +328,7 @@ class OdtWriter {
           (cell.rowSpan > 1 ? ` table:number-rows-spanned="${cell.rowSpan}"` : '')
         const inner = this.blocksXml(cell.blocks, seq) || '<text:p/>'
         cells.push(
-          `<table:table-cell table:style-name="${this.cellStyle(cell.background, cell.paddingPt)}"${span} office:value-type="string">${inner}</table:table-cell>`,
+          `<table:table-cell table:style-name="${this.cellStyle(cell)}"${span} office:value-type="string">${inner}</table:table-cell>`,
         )
         // 가로 병합에 먹힌 칸도 자리를 채워 줘야 열이 맞는다
         for (let k = 1; k < cell.colSpan; k++) cells.push('<table:covered-table-cell/>')
@@ -258,14 +347,87 @@ class OdtWriter {
     return `<table:table table:name="Table${seq.n}">${cols}${trs.join('')}</table:table>`
   }
 
+  /**
+   * 평평한 수준 정보를 ODF가 요구하는 트리로 되접는다.
+   * docx·hwpx는 문단마다 "몇 번째 수준"이라고 적으면 그만이지만, ODF에는 그런 속성이 없다 —
+   * `text:list > text:list-item > (text:p | text:list)` 중첩만이 수준을 표현한다.
+   */
+  private listXml(items: IrPara[], def: IrListDef): string {
+    const styleName = this.listStyle(def)
+    const render = (start: number, level: number): { xml: string; next: number } => {
+      const parts: string[] = []
+      let i = start
+      while (i < items.length && (items[i].list?.level ?? 0) >= level) {
+        if ((items[i].list?.level ?? 0) === level) {
+          let inner = this.paraXml(items[i])
+          i++
+          // 이 항목에 딸린 더 깊은 수준은 **이 항목 안에** 들어가야 한다
+          if (i < items.length && (items[i].list?.level ?? 0) > level) {
+            const sub = render(i, level + 1)
+            inner += sub.xml
+            i = sub.next
+          }
+          parts.push(`<text:list-item>${inner}</text:list-item>`)
+        } else {
+          // 목록이 더 깊은 수준에서 시작한 경우 — 빈 항목으로 한 겹 감싼다
+          const sub = render(i, level + 1)
+          parts.push(`<text:list-item>${sub.xml}</text:list-item>`)
+          i = sub.next
+        }
+      }
+      // 중첩된 목록은 바깥 스타일을 물려받는다 — 최상위에만 이름을 적는다
+      const attr = level === 0 ? ` text:style-name="${styleName}"` : ''
+      return { xml: `<text:list${attr}>${parts.join('')}</text:list>`, next: i }
+    }
+    return render(0, 0).xml
+  }
+
   blocksXml(blocks: IrBlock[], seq: { n: number }): string {
-    return blocks
-      .map((b) =>
-        b.kind === 'p' ? this.paraXml(b.para) : this.tableXml(b.table.rows, b.table.colWidthsPt, seq),
-      )
-      .join('')
+    const out: string[] = []
+    for (let i = 0; i < blocks.length; ) {
+      const b = blocks[i]
+      const list = b.kind === 'p' ? b.para.list : null
+      if (list) {
+        // 같은 목록에 속한 연속 문단을 한 덩어리로 모은다.
+        // (항목 사이에 표가 끼면 목록이 끊기고 번호가 다시 1부터 — 드문 경우라 그대로 둔다)
+        const items: IrPara[] = []
+        let j = i
+        while (j < blocks.length) {
+          const nb = blocks[j]
+          if (nb.kind !== 'p' || nb.para.list?.id !== list.id) break
+          items.push(nb.para)
+          j++
+        }
+        const def = this.lists.get(list.id)
+        out.push(def ? this.listXml(items, def) : items.map((p) => this.paraXml(p)).join(''))
+        i = j
+        continue
+      }
+      out.push(b.kind === 'p' ? this.paraXml(b.para) : this.tableXml(b.table.rows, b.table.colWidthsPt, seq))
+      i++
+    }
+    return out.join('')
   }
 }
+
+/**
+ * 개요 번호 정의. ODF는 CJK 번호 체계를 **표본 문자열**로 적는다(`"가, 나, 다, ..."`) —
+ * 값이 문자열이라 못 알아듣는 구현에서도 파일이 깨지지는 않고 번호 모양만 달라진다.
+ * 들여쓰기를 주지 않는 건 docx·뷰어와 같은 이유 — 번호는 제목 줄 앞에 그냥 붙는다.
+ */
+const OUTLINE_STYLE = () =>
+  `<text:outline-style style:name="Outline">${OUTLINE_SCHEME.map((lv, i) => {
+    const fmt = lv.style === 'hangul' ? '가, 나, 다, ...' : '1'
+    const affix =
+      (lv.prefix ? ` style:num-prefix="${esc(lv.prefix)}"` : '') +
+      (lv.suffix ? ` style:num-suffix="${esc(lv.suffix)}"` : '')
+    return (
+      `<text:outline-level-style text:level="${i + 1}" style:num-format="${esc(fmt)}"${affix}>` +
+      `<style:list-level-properties text:list-level-position-and-space-mode="label-alignment">` +
+      `<style:list-level-label-alignment text:label-followed-by="space" fo:text-indent="0pt" fo:margin-left="0pt"/>` +
+      `</style:list-level-properties></text:outline-level-style>`
+    )
+  }).join('')}</text:outline-style>`
 
 function base64ToBytes(b64: string): Uint8Array {
   const bin = atob(b64)
@@ -282,10 +444,15 @@ export interface OdtResult {
 /** IR HTML의 body → odt 바이트 */
 export function html2odt(root: Element, embed?: EmbeddedFont): OdtResult {
   const doc: IrDoc = readIr(root)
-  const w = new OdtWriter()
+  const w = new OdtWriter(doc.lists, doc.footnotes)
   const seq = { n: 0 }
   const body = doc.sections.map((s) => w.blocksXml(s.blocks, seq)).join('')
   const first = doc.sections[0]
+  // 머리말·꼬리말은 master-page에 산다. 본문과 같은 방출기를 쓰지만 자동 스타일이
+  // content.xml이 아니라 styles.xml에 등록돼야 해서, 전용 writer로 따로 모은다.
+  const hfWriter = new OdtWriter(doc.lists, doc.footnotes)
+  const headerXml = first?.header ? hfWriter.blocksXml(first.header, { n: 0 }) : null
+  const footerXml = first?.footer ? hfWriter.blocksXml(first.footer, { n: 0 }) : null
 
   const content = `<?xml version="1.0" encoding="UTF-8"?>
 <office:document-content ${NS} office:version="1.3">
@@ -299,16 +466,24 @@ ${embed ? `<office:font-face-decls><style:font-face style:name="${embed.family}"
 <office:styles>
 <style:default-style style:family="paragraph"><style:paragraph-properties style:line-height-at-least="${pt(10 * DEFAULT_LINE_HEIGHT)}" fo:margin-top="0pt" fo:margin-bottom="0pt" style:text-autospace="none"/><style:text-properties style:font-name="${DOC_FONT}" fo:font-size="10pt" style:font-size-asian="10pt" style:font-size-complex="10pt"/></style:default-style>
 <style:style style:name="Standard" style:family="paragraph"/>
+${doc.outlineId === null ? '' : OUTLINE_STYLE()}
 </office:styles>
 <office:automatic-styles>
 <style:page-layout style:name="pm1"><style:page-layout-properties
  fo:page-width="${pt(first?.widthPt ?? 595)}" fo:page-height="${pt(first?.heightPt ?? 842)}"
  fo:margin-top="${pt(first?.padTopPt ?? 72)}" fo:margin-bottom="${pt(first?.padBottomPt ?? 72)}"
  fo:margin-left="${pt(first?.padLeftPt ?? 72)}" fo:margin-right="${pt(first?.padRightPt ?? 72)}"
- style:print-orientation="portrait"/></style:page-layout>
+ style:print-orientation="portrait"/>${
+   headerXml === null ? '' : `<style:header-style><style:header-footer-properties fo:min-height="${pt(HF_INSET_PT / 2)}" fo:margin-bottom="${pt(HF_INSET_PT / 2)}"/></style:header-style>`
+ }${
+   footerXml === null ? '' : `<style:footer-style><style:header-footer-properties fo:min-height="${pt(HF_INSET_PT / 2)}" fo:margin-top="${pt(HF_INSET_PT / 2)}"/></style:footer-style>`
+ }</style:page-layout>
+${hfWriter.automaticStyles()}
 </office:automatic-styles>
 <office:master-styles>
-<style:master-page style:name="Standard" style:page-layout-name="pm1"/>
+<style:master-page style:name="Standard" style:page-layout-name="pm1">${
+  headerXml === null ? '' : `<style:header>${headerXml}</style:header>`
+}${footerXml === null ? '' : `<style:footer>${footerXml}</style:footer>`}</style:master-page>
 </office:master-styles>
 </office:document-styles>`
 
@@ -337,7 +512,7 @@ ${w.pictures.map((p) => `<manifest:file-entry manifest:full-path="${p.name}" man
   return {
     data: zipSync(files as never, { level: 6 }),
     stats: {
-      paragraphs: count(/<text:p[ >/]/g),
+      paragraphs: count(/<text:(p|h)[ >/]/g),
       tables: count(/<table:table[ >]/g),
       images: w.pictures.length,
     },

@@ -28,6 +28,13 @@ export interface IrStyle {
 export interface IrRun extends IrStyle {
   /** '\n' = 줄바꿈, '\t' = 탭 */
   text: string
+  /**
+   * 각주 참조면 가리키는 `doc-footnote`의 id. 글자가 없는 런이다 —
+   * **번호는 여기 없다.** 화면은 뷰어 CSS counter가, 파일은 각 포맷의 각주 기능이 센다.
+   */
+  footnote?: string
+  /** 쪽번호 등 계산 필드면 그 종류. 글자가 없는 런이다 */
+  field?: IrFieldKind
 }
 
 export interface IrImage {
@@ -38,6 +45,69 @@ export interface IrImage {
 }
 
 export type IrAlign = 'left' | 'center' | 'right' | 'justify'
+
+/**
+ * 목록 표시 방식. 뷰어가 브라우저 기본 마커로 그리므로 종류도 그것만 있으면 된다
+ * — `ul` → 글머리표, `ol` → 십진수.
+ */
+export type IrListMarker = 'bullet' | 'decimal'
+
+/** 개요 번호 한 수준의 서식 — `prefix + 번호 + suffix` */
+export interface OutlineLevel {
+  style: 'decimal' | 'hangul'
+  prefix: string
+  suffix: string
+}
+
+/**
+ * 개요 번호 스킴 — 한글 공문서 관행 `1. → 가. → 1) → 가) → (1) → (가)`.
+ *
+ * **진실원은 여기 하나다.** 뷰어 CSS counter도, 백엔드 셋의 numbering 정의도 이 배열에서 나온다
+ * — 갈라지면 화면에 보이는 번호와 저장된 번호가 달라진다(제목 여백·링크 색과 같은 원리).
+ * 번호 자체는 IR에 저장하지 않는다(IR-SPEC 규칙 2: 진실원은 스킴 참조, 렌더는 파생).
+ */
+export const OUTLINE_SCHEME: OutlineLevel[] = [
+  { style: 'decimal', prefix: '', suffix: '.' },
+  { style: 'hangul', prefix: '', suffix: '.' },
+  { style: 'decimal', prefix: '', suffix: ')' },
+  { style: 'hangul', prefix: '', suffix: ')' },
+  { style: 'decimal', prefix: '(', suffix: ')' },
+  { style: 'hangul', prefix: '(', suffix: ')' },
+]
+
+/** 가·나·다… — 뷰어 `@counter-style`이 쓰는 기호 집합 (system: alphabetic) */
+export const HANGUL_ORDINALS = ['가', '나', '다', '라', '마', '바', '사', '아', '자', '차', '카', '타', '파', '하']
+
+/**
+ * `doc-field`에 쓸 수 있는 종류. 쪽번호는 **글자가 아니라 렌더 시점에 계산되는 값**이라
+ * IR에는 종류만 담는다(규칙 2). 화면은 조판이, 파일은 각 포맷의 필드가 센다.
+ */
+export const FIELD_KINDS = ['page', 'pages'] as const
+export type IrFieldKind = (typeof FIELD_KINDS)[number]
+
+/**
+ * 페이지 가장자리에서 머리말·꼬리말까지의 거리(pt).
+ * 뷰어의 배치와 docx `w:pgMar`의 header/footer가 **같은 값**이어야 화면과 저장물이 맞는다.
+ */
+export const HF_INSET_PT = 36
+
+/** `data-num`에 쓸 수 있는 값 — 지금은 기본 개요 스킴 하나뿐 */
+export const OUTLINE_SCHEMES = ['outline'] as const
+
+/** 문단이 어느 목록의 몇 번째 수준인가 */
+export interface IrListRef {
+  /** 목록 인스턴스 id. 같은 id끼리 번호가 이어지고, 다른 id면 1부터 다시 센다 */
+  id: number
+  /** 중첩 수준 — 0부터 */
+  level: number
+}
+
+/** 문서 전역 목록 정의 — 세 포맷 모두 본문 밖에 이 테이블을 요구한다 */
+export interface IrListDef {
+  id: number
+  /** 수준별 표시. 배열 길이 = 그 목록이 실제로 쓴 최대 수준 + 1 */
+  levels: IrListMarker[]
+}
 
 export interface IrPara {
   align: IrAlign
@@ -53,6 +123,52 @@ export interface IrPara {
   spaceAfterPt: number
   /** h1~h6이면 1~6, 아니면 0. 뷰어 CSS의 제목 여백·줄간격을 백엔드가 그대로 재현하는 데 쓴다 */
   heading: number
+  /** 목록 항목(`li`)이면 소속 목록과 수준, 아니면 null */
+  list: IrListRef | null
+  /** 개요 번호에 참여하는 제목이면 그 수준(1~6), 아니면 null */
+  outline: number | null
+}
+
+/**
+ * 목록 한 수준의 들여쓰기(pt) — 뷰어 BASE_CSS의 `.hwp-page ul, ol { padding-left: 24pt }`와
+ * **같은 값이어야 한다**. 번호·글머리표는 이 칸 안에 내어쓰기로 놓인다.
+ * 제목 여백(HEADING_SPACE)·링크 색(LINK_COLOR)과 같은 원리 — 화면과 저장물의 진실원은 하나다.
+ */
+export const LIST_INDENT_PT = 24
+
+/**
+ * 수준별 글머리표 — 브라우저 기본(disc → circle → square)과 같게.
+ * 더 깊은 수준은 브라우저처럼 마지막 것을 반복한다.
+ */
+export const BULLET_CHARS = ['\u2022', '\u25E6', '\u25AA']
+
+/** 수준에 해당하는 글머리표 문자 */
+export function bulletChar(level: number): string {
+  return BULLET_CHARS[Math.min(level, BULLET_CHARS.length - 1)]
+}
+
+/**
+ * 텍스트 노드가 **화면에 실제로 보이는** 글자.
+ *
+ * 소스를 예쁘게 쓴 IR은 `<li>` 안이나 중첩 목록 앞뒤에 개행+들여쓰기를 남긴다.
+ * 브라우저는 그걸 안 보여주는데 그대로 옮기면 저장물에만 없던 줄바꿈·공백이 생겨
+ * 화면과 파일이 어긋난다. 두 가지만 손본다 —
+ *
+ * 1. **개행과 그 둘레의 들여쓰기**를 공백 하나로 줄인다. HTML 소스의 개행은 어떤 경우에도
+ *    줄바꿈이 아니다(줄바꿈은 `<br>`이다). 탭과 연속 공백은 그대로 둔다 — 리더가 탭 컨트롤을
+ *    `\t`로 실어 오기 때문에 여기서 뭉개면 왕복에서 사라진다.
+ * 2. 문단의 **처음·끝**이거나 블록 자식(`ul`·`ol`·`table`)과 맞닿은 쪽의 공백은 버린다.
+ *    브라우저가 안 보여주는 자리다.
+ *
+ * 결과가 빈 문자열이면 그 텍스트는 없는 것이다.
+ */
+export function displayText(node: Node): string {
+  let text = (node.textContent ?? '').replace(/[ \t]*\r?\n[ \t]*/g, ' ')
+  const isEdge = (n: Node | null) =>
+    n === null || (n.nodeType === 1 && (n as Element).tagName in { UL: 1, OL: 1, TABLE: 1 })
+  if (isEdge(node.previousSibling)) text = text.replace(/^ +/, '')
+  if (isEdge(node.nextSibling)) text = text.replace(/ +$/, '')
+  return text
 }
 
 /** 뷰어 BASE_CSS의 제목 규칙 — margin: 4pt 0 2pt · line-height: 1.4 */
@@ -80,6 +196,40 @@ export const DOC_FONT = 'Noto Sans KR'
  */
 export const LINK_COLOR = '#1A4FD6'
 
+/** 테두리 한 변 — `border` 축약 속성이 싣는 값 */
+export interface IrBorder {
+  widthPt: number
+  style: 'solid' | 'dashed' | 'dotted' | 'double'
+  /** #RRGGBB */
+  color: string
+}
+
+export type IrVAlign = 'top' | 'middle' | 'bottom'
+
+/**
+ * 표 셀 기본 테두리·세로 정렬 — 뷰어 BASE_CSS의 `table.hwp-table td`와 **같은 값**이어야 한다.
+ * 0.75pt ≈ 1px. IR에 `border`·`vertical-align`이 없으면 이 값이 쓰이고, 뷰어 CSS도
+ * 여기서 생성된다(제목 여백·링크 색·개요 스킴과 같은 원리).
+ */
+export const CELL_BORDER: IrBorder = { widthPt: 0.75, style: 'solid', color: '#555555' }
+export const CELL_VALIGN: IrVAlign = 'middle'
+
+/**
+ * `border` 축약 속성 파싱 — `<width> <style> <color>` (순서 무관, 빠진 값은 기본값).
+ * `none`/`0`이면 null(테두리 없음). 속성 자체가 없으면 호출한 쪽이 `CELL_BORDER`를 쓴다.
+ */
+export function parseBorder(value: string): IrBorder | null {
+  const v = value.trim().toLowerCase()
+  if (!v || v === 'none' || v === '0' || v.includes('hidden')) return null
+  const style = (['solid', 'dashed', 'dotted', 'double'] as const).find((k) => v.includes(k))
+  const color = toHex(/(#[0-9a-f]{3,8}|rgb\([^)]*\))/i.exec(value)?.[1] ?? null)
+  // 색을 먼저 걷어내고 굵기를 찾는다 — 안 그러면 `#c2352b`의 숫자를 굵기로 읽는다
+  const width = /(-?[\d.]+)\s*(pt|px|in|mm)?/.exec(v.replace(/#[0-9a-f]{3,8}|rgb\([^)]*\)/gi, ' '))
+  const widthPt = width ? (toPt(`${width[1]}${width[2] ?? 'pt'}`) ?? CELL_BORDER.widthPt) : CELL_BORDER.widthPt
+  if (widthPt <= 0) return null
+  return { widthPt, style: style ?? CELL_BORDER.style, color: color ?? CELL_BORDER.color }
+}
+
 export interface IrCell {
   colSpan: number
   rowSpan: number
@@ -89,6 +239,9 @@ export interface IrCell {
   paddingPt: [number, number, number, number]
   /** #RRGGBB */
   background: string | null
+  /** 셀 테두리 (null = 없음). IR에 없으면 CELL_BORDER */
+  border: IrBorder | null
+  vAlign: IrVAlign
   blocks: IrBlock[]
 }
 
@@ -101,6 +254,9 @@ export interface IrTable {
 export type IrBlock = { kind: 'p'; para: IrPara } | { kind: 'table'; table: IrTable }
 
 export interface IrSection {
+  /** 머리말 블록 (없으면 null) — 본문 흐름 밖이고 페이지마다 그려진다 */
+  header: IrBlock[] | null
+  footer: IrBlock[] | null
   widthPt: number
   heightPt: number
   padLeftPt: number
@@ -110,8 +266,23 @@ export interface IrSection {
   blocks: IrBlock[]
 }
 
+/** 각주 하나 — 내용은 블록들이다 (문단·표를 담을 수 있다) */
+export interface IrFootnote {
+  id: string
+  blocks: IrBlock[]
+}
+
 export interface IrDoc {
   sections: IrSection[]
+  /** `doc-footnote` 블록들. 본문 흐름에서 빠지고 참조 지점에서 불린다 */
+  footnotes: IrFootnote[]
+  /** 문서 안의 모든 목록 인스턴스. 백엔드는 이걸로 numbering 정의 테이블을 만든다 */
+  lists: IrListDef[]
+  /**
+   * 개요 번호를 쓰는 제목이 하나라도 있으면 그 정의에 붙일 id.
+   * 목록과 **같은 번호 공간**에서 뽑는다 — docx numId·hwpx numbering id가 겹치면 안 된다.
+   */
+  outlineId: number | null
 }
 
 /**
@@ -241,7 +412,14 @@ function readImage(img: Element): IrImage | null {
   }
 }
 
-function readPara(p: Element): IrPara {
+/**
+ * 문단 하나를 읽는다.
+ *
+ * `only`를 주면 `p`의 자식 전부가 아니라 그 노드들만 읽는다 — 표 셀처럼 `<p>` 없이
+ * 인라인 내용을 바로 담은 컨테이너에서 **암묵 문단**을 만들 때 쓴다. 정렬·여백은 여전히
+ * 컨테이너에서 읽는다(브라우저가 익명 블록 박스에 적용하는 것과 같다).
+ */
+function readPara(p: Element, list: IrListRef | null = null, only?: Node[]): IrPara {
   const h = /^H([1-6])$/.exec(p.tagName)
   const heading = h ? Number(h[1]) : 0
   const para: IrPara = {
@@ -249,6 +427,9 @@ function readPara(p: Element): IrPara {
     runs: [],
     images: [],
     heading,
+    list,
+    // 번호를 매길지는 IR이 정하고(스킴 참조), 몇 번인지는 렌더가 센다
+    outline: heading && p.getAttribute('data-num') ? heading : null,
     indentPt: toPt(styleProp(p, 'margin-left')) ?? 0,
     firstLinePt: toPt(styleProp(p, 'text-indent')) ?? 0,
     // 제목 여백의 진실원은 IR이다. IR에 안 적혀 있을 때만 뷰어 CSS와 같은 기본값으로 채운다
@@ -265,10 +446,10 @@ function readPara(p: Element): IrPara {
     else para.runs.push({ ...style, text })
   }
 
-  const walk = (node: Node, style: IrStyle) => {
-    for (const child of Array.from(node.childNodes)) {
+  const walkNodes = (nodes: Node[], style: IrStyle) => {
+    for (const child of nodes) {
       if (child.nodeType === 3) {
-        push(child.textContent ?? '', style)
+        push(displayText(child), style)
         continue
       }
       if (child.nodeType !== 1) continue
@@ -277,21 +458,41 @@ function readPara(p: Element): IrPara {
         case 'BR':
           push('\n', style)
           break
+        case 'DOC-FIELD': {
+          const kind = el.getAttribute('data-kind')
+          if (kind && (FIELD_KINDS as readonly string[]).includes(kind))
+            para.runs.push({ ...style, text: '', field: kind as IrFieldKind })
+          break
+        }
+        case 'A': {
+          // 각주 참조는 링크가 아니라 표식이다 — 글자 없는 런 하나로 남긴다.
+          // (`push`는 빈 글자를 버리므로 병합을 거치지 않고 직접 넣는다)
+          const fn = el.getAttribute('data-fn-ref')
+          if (fn) para.runs.push({ ...style, text: '', footnote: fn })
+          else walkNodes(Array.from(el.childNodes), readStyle(el, style))
+          break
+        }
         case 'IMG': {
           const img = readImage(el)
           if (img) para.images.push(img)
           break
         }
+        // 블록 자식은 문단의 글이 아니다 — readBlocks가 형제 블록으로 따로 꺼낸다.
+        // (안 걸러내면 `<li>겉<ul><li>속</li></ul></li>`가 "겉속" 한 문단이 된다)
+        case 'UL':
+        case 'OL':
+        case 'TABLE':
+          break
         default:
-          walk(el, readStyle(el, style))
+          walkNodes(Array.from(el.childNodes), readStyle(el, style))
       }
     }
   }
-  walk(p, base)
+  walkNodes(only ?? Array.from(p.childNodes), base)
   return para
 }
 
-function sameStyle(a: IrStyle, b: IrStyle): boolean {
+function sameStyle(a: IrRun, b: IrStyle): boolean {
   return (
     a.sizePt === b.sizePt &&
     a.color === b.color &&
@@ -301,11 +502,24 @@ function sameStyle(a: IrStyle, b: IrStyle): boolean {
     a.strike === b.strike &&
     a.family === b.family &&
     a.vertAlign === b.vertAlign &&
-    a.link === b.link
+    a.link === b.link &&
+    // 각주 참조·쪽번호 런에는 절대 글자를 붙이지 않는다 — 뒤따르는 글자가 필드 안으로 빨려 든다
+    a.footnote === undefined &&
+    a.field === undefined
   )
 }
 
-function readTable(table: Element): IrTable {
+function readCellBorder(td: Element): IrBorder | null {
+  const raw = styleProp(td, 'border')
+  return raw === null ? CELL_BORDER : parseBorder(raw)
+}
+
+function readVAlign(td: Element): IrVAlign {
+  const v = styleProp(td, 'vertical-align')
+  return v === 'top' || v === 'bottom' || v === 'middle' ? v : CELL_VALIGN
+}
+
+function readTable(table: Element, ctx: ReadCtx): IrTable {
   const trs = Array.from(table.querySelectorAll('tr')).filter((tr) => tr.closest('table') === table)
   const rows: IrCell[][] = []
   for (const tr of trs) {
@@ -319,7 +533,9 @@ function readTable(table: Element): IrTable {
         heightPt: toPt(styleProp(td, 'height')) ?? 0,
         paddingPt: readPadding(td),
         background: toHex(styleProp(td, 'background') ?? styleProp(td, 'background-color')),
-        blocks: readBlocks(td),
+        border: readCellBorder(td),
+        vAlign: readVAlign(td),
+        blocks: readBlocks(td, ctx),
       })
     }
     rows.push(cells)
@@ -345,38 +561,129 @@ function readTable(table: Element): IrTable {
   return { rows, colWidthsPt: colWidthsPt.map((w) => w || 60) }
 }
 
-function readBlocks(container: Element): IrBlock[] {
-  const out: IrBlock[] = []
-  for (const child of Array.from(container.children)) {
-    if (child.tagName === 'P' || /^H[1-6]$/.test(child.tagName) || child.tagName === 'LI') {
-      out.push({ kind: 'p', para: readPara(child) })
-    } else if (child.tagName === 'TABLE') {
-      out.push({ kind: 'table', table: readTable(child) })
-    } else if (child.tagName === 'UL' || child.tagName === 'OL' || child.tagName === 'DIV') {
-      out.push(...readBlocks(child))
+/** 문서를 훑는 동안 이어지는 상태 — 지금은 목록 인스턴스 번호뿐 */
+interface ReadCtx {
+  lists: IrListDef[]
+  nextListId: number
+  footnotes: IrFootnote[]
+}
+
+/**
+ * `ul`/`ol` 한 그루를 평평한 문단들로 편다. 중첩은 사라지지 않고 `list.level`로 남는다
+ * — docx·hwpx는 어차피 평평한 문단에 수준을 매기고, odt만 이걸 다시 접는다(html2odt).
+ *
+ * 바깥쪽 `ul` 아래 `ol`이 오는 식으로 수준마다 종류가 다를 수 있어서 표시는 수준별로 기록한다.
+ */
+function readList(el: Element, def: IrListDef, level: number, ctx: ReadCtx, out: IrBlock[]): void {
+  const marker: IrListMarker = el.tagName === 'OL' ? 'decimal' : 'bullet'
+  for (const li of Array.from(el.children)) {
+    if (li.tagName !== 'LI') continue
+    // 항목이 하나라도 있을 때만 수준을 등록한다 (빈 `<ul>`이 정의를 만들지 않게)
+    if (def.levels[level] === undefined) def.levels[level] = marker
+    out.push({ kind: 'p', para: readPara(li, { id: def.id, level }) })
+    for (const child of Array.from(li.children)) {
+      if (child.tagName === 'UL' || child.tagName === 'OL') readList(child, def, level + 1, ctx, out)
+      else if (child.tagName === 'TABLE') out.push({ kind: 'table', table: readTable(child, ctx) })
     }
   }
+}
+
+/** 블록으로 다뤄야 하는 태그 — 나머지는 인라인이라 암묵 문단으로 묶인다 */
+const BLOCK_TAGS = new Set([
+  'P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'LI', 'TABLE', 'UL', 'OL', 'DIV',
+  'DOC-FOOTNOTE', 'DOC-PAGEBREAK', 'DOC-HEADER', 'DOC-FOOTER',
+])
+
+/** 그 노드가 문단에 담길 만한 내용을 갖고 있나 (공백만이면 아니다) */
+function hasContent(nodes: Node[]): boolean {
+  return nodes.some(
+    (n) =>
+      (n.textContent ?? '').trim() !== '' ||
+      (n.nodeType === 1 && ((n as Element).tagName === 'IMG' || (n as Element).tagName === 'BR')),
+  )
+}
+
+function readBlocks(container: Element, ctx: ReadCtx): IrBlock[] {
+  const out: IrBlock[] = []
+  // 표 셀처럼 `<p>` 없이 글자를 바로 담은 컨테이너 — 브라우저는 익명 블록으로 그리는데
+  // 예전에는 백엔드 셋이 전부 **통째로 버렸다**. 인라인 내용을 모아 암묵 문단으로 만든다.
+  let inline: Node[] = []
+  const flush = () => {
+    if (hasContent(inline)) out.push({ kind: 'p', para: readPara(container, null, inline) })
+    inline = []
+  }
+
+  for (const child of Array.from(container.childNodes)) {
+    const tag = child.nodeType === 1 ? (child as Element).tagName : null
+    if (tag === null || !BLOCK_TAGS.has(tag)) {
+      inline.push(child)
+      continue
+    }
+    flush()
+    const el = child as Element
+    if (tag === 'P' || /^H[1-6]$/.test(tag) || tag === 'LI') {
+      out.push({ kind: 'p', para: readPara(el) })
+    } else if (tag === 'TABLE') {
+      out.push({ kind: 'table', table: readTable(el, ctx) })
+    } else if (tag === 'UL' || tag === 'OL') {
+      // 최상위 목록 하나 = 인스턴스 하나. 중첩된 것들은 같은 인스턴스를 수준으로 공유한다
+      const def: IrListDef = { id: ctx.nextListId++, levels: [] }
+      readList(el, def, 0, ctx, out)
+      if (def.levels.length) ctx.lists.push(def)
+      else ctx.nextListId--
+    } else if (tag === 'DIV') {
+      out.push(...readBlocks(el, ctx))
+    } else if (tag === 'DOC-FOOTNOTE') {
+      // 본문 흐름에서 빠진다 — 참조 지점에서 불린다
+      const id = el.getAttribute('id')
+      if (id) ctx.footnotes.push({ id, blocks: readBlocks(el, ctx) })
+    }
+  }
+  flush()
   return out
+}
+
+/** 구역의 머리말/꼬리말 — 조판이 페이지마다 복제한 사본(`data-pg`)은 세지 않는다 */
+function hfBlocks(sec: Element, tag: 'doc-header' | 'doc-footer', ctx: ReadCtx): IrBlock[] | null {
+  const el = Array.from(sec.children).find((c) => c.tagName === tag.toUpperCase() && !c.hasAttribute('data-pg'))
+  return el ? readBlocks(el, ctx) : null
 }
 
 /** IR HTML의 body(또는 doc-section들을 담은 요소) → 중립 문서 트리 */
 export function readIr(root: Element): IrDoc {
   const sections = Array.from(root.querySelectorAll('doc-section'))
   const targets = sections.length ? sections : [root]
+  const ctx: ReadCtx = { lists: [], nextListId: 1, footnotes: [] }
+  // 구역을 먼저 다 훑어야 ctx.lists가 채워진다 — 목록 정의는 문서 전역이라 순서가 중요하다
+  const sectionsOut = targets.map((sec) => {
+    // doc-section의 style에서 페이지 크기·여백을 되읽는다 (없으면 A4 세로)
+    const pad = (styleProp(sec, 'padding') ?? '').split(/\s+/)
+    const padPt = (i: number, fallback: number) => toPt(pad[i] ?? null) ?? fallback
+    return {
+      widthPt: toPt(styleProp(sec, 'width')) ?? 595,
+      heightPt: toPt(styleProp(sec, 'min-height') ?? styleProp(sec, 'height')) ?? 842,
+      padTopPt: padPt(0, 72),
+      padRightPt: padPt(1, 72),
+      padBottomPt: padPt(2, padPt(0, 72)),
+      padLeftPt: padPt(3, padPt(1, 72)),
+      // 머리말·꼬리말은 본문 흐름 밖이다 — 구역에 하나씩만 본다
+      header: hfBlocks(sec, 'doc-header', ctx),
+      footer: hfBlocks(sec, 'doc-footer', ctx),
+      blocks: readBlocks(sec, ctx),
+    }
+  })
+  // 개요 번호 정의는 문서에 하나. 쓰는 제목이 있을 때만 자리를 잡는다
+  const hasOutline = (blocks: IrBlock[]): boolean =>
+    blocks.some((b) =>
+      b.kind === 'p'
+        ? b.para.outline !== null
+        : b.table.rows.some((row) => row.some((c) => hasOutline(c.blocks))),
+    )
+  const usesOutline = sectionsOut.some((sec) => hasOutline(sec.blocks))
   return {
-    sections: targets.map((sec) => {
-      // doc-section의 style에서 페이지 크기·여백을 되읽는다 (없으면 A4 세로)
-      const pad = (styleProp(sec, 'padding') ?? '').split(/\s+/)
-      const padPt = (i: number, fallback: number) => toPt(pad[i] ?? null) ?? fallback
-      return {
-        widthPt: toPt(styleProp(sec, 'width')) ?? 595,
-        heightPt: toPt(styleProp(sec, 'min-height') ?? styleProp(sec, 'height')) ?? 842,
-        padTopPt: padPt(0, 72),
-        padRightPt: padPt(1, 72),
-        padBottomPt: padPt(2, padPt(0, 72)),
-        padLeftPt: padPt(3, padPt(1, 72)),
-        blocks: readBlocks(sec),
-      }
-    }),
+    sections: sectionsOut,
+    lists: ctx.lists,
+    footnotes: ctx.footnotes,
+    outlineId: usesOutline ? ctx.nextListId++ : null,
   }
 }

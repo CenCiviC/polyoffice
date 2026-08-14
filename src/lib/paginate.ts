@@ -15,8 +15,16 @@ const PAGE_FLAG = 'data-pg'
 /** 본문 흐름에서 빼고 마지막 페이지에 붙이는 꼬리 블록 */
 const TAIL = new Set(['DOC-FOOTNOTE'])
 
+/** 본문 흐름 밖에서 **페이지마다** 되풀이되는 블록 */
+const REPEATED = new Set(['DOC-HEADER', 'DOC-FOOTER'])
+
 /** 만들어진 페이지의 블록을 원래 섹션으로 되돌린다 (라이브 문서·클론 모두에서 동작) */
 export function unpaginate(root: ParentNode): void {
+  // 페이지마다 복제한 머리말·꼬리말은 문서가 아니다 — 되돌릴 때 지운다.
+  // (안 지우면 원래 구역에 페이지 수만큼 쌓여 저장물에 그만큼 중복된다)
+  for (const el of Array.from(root.querySelectorAll(`doc-header[${PAGE_FLAG}], doc-footer[${PAGE_FLAG}]`)))
+    el.remove()
+
   let origin: Element | null = null
   for (const sec of Array.from(root.querySelectorAll('doc-section'))) {
     if (!sec.hasAttribute(PAGE_FLAG)) {
@@ -40,6 +48,9 @@ export function paginate(doc: Document): void {
   try {
     unpaginate(doc)
     for (const sec of Array.from(doc.querySelectorAll('doc-section'))) splitSection(sec as HTMLElement)
+    // 전체 쪽수는 CSS counter로 셀 수 없다 — 조판만 아는 값이라 여기서 넘긴다.
+    // `doc-field[data-kind="pages"]`가 `var(--pages)`로 읽는다(BASE_CSS).
+    body.style.setProperty('--pages', `"${doc.querySelectorAll('doc-section').length}"`)
   } finally {
     body.style.zoom = zoom
   }
@@ -52,8 +63,9 @@ function splitSection(sec: HTMLElement): void {
   if (!(contentH > 0)) return
 
   const kids = Array.from(sec.children) as HTMLElement[]
-  const flow = kids.filter((k) => !TAIL.has(k.tagName))
+  const flow = kids.filter((k) => !TAIL.has(k.tagName) && !REPEATED.has(k.tagName))
   const tail = kids.filter((k) => TAIL.has(k.tagName))
+  const repeated = kids.filter((k) => REPEATED.has(k.tagName))
   if (flow.length < 2) return
 
   // 1열 상태에서 위치를 한 번에 잰다 — 페이지가 갈려도 폭이 같으니 블록 높이는 그대로다.
@@ -84,6 +96,14 @@ function splitSection(sec: HTMLElement): void {
     if (starts.has(el)) {
       const page = sec.cloneNode(false) as HTMLElement // 폭·용지높이·여백을 그대로 물려받는다
       page.setAttribute(PAGE_FLAG, '')
+      // 머리말·꼬리말은 페이지마다 다시 그린다. 사본에 표시를 남겨 unpaginate가 걷어낸다
+      for (const hf of repeated) {
+        const copy = hf.cloneNode(true) as HTMLElement
+        copy.setAttribute(PAGE_FLAG, '')
+        // 사본을 고쳐 봐야 되돌릴 때 사라진다 — 원본(첫 페이지)만 고치게 막는다
+        copy.setAttribute('contenteditable', 'false')
+        page.appendChild(copy)
+      }
       cur.after(page)
       cur = page
     }
