@@ -56,6 +56,23 @@ pub const ATTR_SUB: u32 = 1 << 15;
 #[serde(rename_all = "camelCase")]
 pub struct BorderFill {
     pub background_color: Option<[u8; 3]>,
+    /// 셀 테두리 — **세 값이 다르다.**
+    /// 키 없음 = 그 리더가 아직 테두리를 안 읽는다(방출기가 기본값에 맡긴다) ·
+    /// `null` = 테두리 없음 · 객체 = 그 테두리.
+    /// IR은 네 변을 따로 담지 못하므로 리더가 대표 한 변(NONE이 아닌 첫 변)을 고른다.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub border: Option<Option<Border>>,
+}
+
+/// 테두리 한 변 — IR의 `border` 축약 속성과 같은 어휘
+#[derive(Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Border {
+    /// pt
+    pub width_pt: f32,
+    /// solid · dashed · dotted · double
+    pub style: String,
+    pub color: [u8; 3],
 }
 
 #[derive(Serialize, Debug, Default)]
@@ -71,7 +88,28 @@ pub struct ParaShape {
     pub space_before: i32,
     /// 문단 뒤 여백 (hwpunit)
     pub space_after: i32,
+    /// 문단 머리 종류 — 0 없음 · 1 개요 · 2 문단번호 · 3 글머리표
+    /// (.hwp 문단 머리 종류와 같은 값. XML 리더 넷도 여기에 맞춘다.)
+    pub head_kind: u8,
+    /// 문단 머리 수준 — 0부터
+    pub head_level: u8,
+    /// 번호 매김 정의 id. 같은 id끼리 번호가 이어진다(0이면 미상)
+    pub head_id: u16,
 }
+
+/// 문단 머리 묶음. 인터너 키로도 쓰이므로 Hash/Eq를 갖는다.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Hash, Debug)]
+pub struct ParaHead {
+    pub kind: u8,
+    pub level: u8,
+    pub id: u16,
+}
+
+/// ParaShape.head_kind 값 — 리더 다섯이 같은 이름을 쓴다
+pub const HEAD_NONE: u8 = 0;
+pub const HEAD_OUTLINE: u8 = 1;
+pub const HEAD_NUMBER: u8 = 2;
+pub const HEAD_BULLET: u8 = 3;
 
 /// 문단 여백 묶음 (hwpunit). 인터너 키로도 쓰이므로 Hash/Eq를 갖는다.
 #[derive(Clone, Copy, Default, PartialEq, Eq, Hash, Debug)]
@@ -93,6 +131,11 @@ pub struct Section {
     pub padding_bottom: u32,
     pub header_padding: u32,
     pub footer_padding: u32,
+    /// 머리말·꼬리말 — 본문 흐름 밖이다. 비면 직렬화에서 빠진다
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub header: Vec<Paragraph>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub footer: Vec<Paragraph>,
     pub paragraphs: Vec<Paragraph>,
 }
 
@@ -131,6 +174,9 @@ pub struct Run {
     /// 하이퍼링크 대상. 없으면 직렬화에서 빠진다 (기존 JSON과 모양을 유지하려고).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub link: Option<String>,
+    /// 계산 필드 — page · pages. 글자가 없는 런이다(번호는 렌더가 센다).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
 }
 
 #[derive(Serialize, Debug, Default)]
@@ -156,5 +202,8 @@ pub struct Cell {
     pub padding: [u16; 4],
     /// DocInfo.border_fills 인덱스 (0-based)
     pub border_fill_id: Option<u16>,
+    /// 세로 정렬 — top · middle · bottom. 없으면 기본값(middle)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vert_align: Option<String>,
     pub paragraphs: Vec<Paragraph>,
 }

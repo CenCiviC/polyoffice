@@ -14,6 +14,8 @@ use crate::model::*;
 
 #[derive(Default)]
 struct IdMaps {
+    /// numbering id → 수준별 "글머리표인가"(0-based). paraHead 서식에 `^n`이 없으면 글머리표다.
+    bullet_levels: HashMap<String, Vec<bool>>,
     fonts: HashMap<String, u16>,
     char_shapes: HashMap<String, u32>,
     para_shapes: HashMap<String, u16>,
@@ -162,6 +164,21 @@ fn parse_header(doc: &Document, ids: &mut IdMaps) -> DocInfo {
         }
     }
 
+    // 번호 매김 정의 — 수준마다 서식 문자열에 `^n`이 있으면 번호, 없으면 글머리표다.
+    // (우리 쓰기 백엔드도 글머리표를 "^n 없는 번호 서식"으로 낸다. hh:bullets는 실물 미확인.)
+    for num in root
+        .descendants()
+        .filter(|n| n.tag_name().name() == "numbering")
+    {
+        let Some(id) = num.attribute("id") else { continue };
+        let mut levels = Vec::new();
+        for head in num.children().filter(|n| n.tag_name().name() == "paraHead") {
+            let fmt = head.text().unwrap_or("");
+            levels.push(!fmt.contains('^'));
+        }
+        ids.bullet_levels.insert(id.to_string(), levels);
+    }
+
     for bf in root
         .descendants()
         .filter(|n| n.tag_name().name() == "borderFill")
@@ -175,7 +192,16 @@ fn parse_header(doc: &Document, ids: &mut IdMaps) -> DocInfo {
             .find(|n| n.tag_name().name() == "winBrush")
             .and_then(|n| n.attribute("faceColor"))
             .and_then(hex_rgb);
-        info.border_fills.push(BorderFill { background_color });
+        // IR은 네 변을 따로 담지 못한다 — NONE이 아닌 첫 변을 대표로 쓴다.
+        // (넷이 다른 표는 흔치 않고, 다르면 가장 눈에 띄는 변이 남는 편이 낫다.)
+        // hwpx는 네 변을 늘 적는다 — 읽었다는 사실 자체를 Some으로, 값이 NONE뿐이면 Some(None)
+        let border = Some(
+            ["leftBorder", "topBorder", "rightBorder", "bottomBorder"]
+                .iter()
+                .filter_map(|tag| bf.children().find(|n| n.tag_name().name() == *tag))
+                .find_map(read_border),
+        );
+        info.border_fills.push(BorderFill { background_color, border });
     }
 
     for cp in root
@@ -271,12 +297,42 @@ fn parse_header(doc: &Document, ids: &mut IdMaps) -> DocInfo {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(0)
         };
+        // 문단 머리 — <hh:heading type idRef level>. 실물 hwpx에서 확인한 어휘.
+        // level은 0부터다(paraHead의 level은 1부터라 여기서만 0-based).
+        let head = pp
+            .children()
+            .find(|n| n.tag_name().name() == "heading")
+            .map(|h| {
+                let level: u8 = h.attribute("level").and_then(|v| v.parse().ok()).unwrap_or(0);
+                let id_ref = h.attribute("idRef").unwrap_or("0");
+                let kind = match h.attribute("type") {
+                    Some("OUTLINE") => HEAD_OUTLINE,
+                    Some("BULLET") => HEAD_BULLET,
+                    Some("NUMBER") => {
+                        // 번호인지 글머리표인지는 heading이 아니라 **정의**가 안다
+                        let bullet = ids
+                            .bullet_levels
+                            .get(id_ref)
+                            .and_then(|lv| lv.get(level as usize))
+                            .copied()
+                            .unwrap_or(false);
+                        if bullet { HEAD_BULLET } else { HEAD_NUMBER }
+                    }
+                    _ => HEAD_NONE,
+                };
+                let id = id_ref.parse().unwrap_or(0);
+                (kind, level, id)
+            })
+            .unwrap_or((HEAD_NONE, 0, 0));
         info.para_shapes.push(ParaShape {
             align,
             indent: margin_of("left"),
             first_line: margin_of("intent"),
             space_before: margin_of("prev"),
             space_after: margin_of("next"),
+            head_kind: head.0,
+            head_level: head.1,
+            head_id: head.2,
         });
     }
 
@@ -314,6 +370,27 @@ fn hex_rgb(s: &str) -> Option<[u8; 3]> {
 }
 
 // ---------------- section{i}.xml → Section ----------------
+
+/// `<hh:leftBorder type width color>` 한 변 → IR 어휘.
+/// 굵기는 "0.12 mm" 꼴이라 pt로 바꾼다. NONE이면 테두리가 없다는 뜻이라 None.
+fn read_border(n: Node) -> Option<Border> {
+    let style = match n.attribute("type")? {
+        "NONE" => return None,
+        "DASH" | "LONG_DASH" | "DASH_DOT" | "DASH_DOT_DOT" => "dashed",
+        "DOT" | "CIRCLE" => "dotted",
+        t if t.starts_with("DOUBLE") || t.starts_with("THICK") => "double",
+        _ => "solid",
+    };
+    let mm: f32 = n
+        .attribute("width")
+        .and_then(|w| w.trim_end_matches(" mm").trim().parse().ok())
+        .unwrap_or(0.12);
+    Some(Border {
+        width_pt: mm * 72.0 / 25.4,
+        style: style.to_string(),
+        color: n.attribute("color").and_then(hex_rgb).unwrap_or([0, 0, 0]),
+    })
+}
 
 fn parse_section(doc: &Document, ids: &IdMaps) -> Section {
     let mut section = Section::default();
@@ -372,6 +449,25 @@ fn parse_paragraph(p: Node, section: &mut Section, ids: &IdMaps) -> Paragraph {
                                 link = hyperlink_target(c)
                             }
                             "fieldEnd" => link = None,
+                            // 머리말·꼬리말은 본문 흐름 밖이다 — 구역으로 올린다.
+                            // 실물 hwpx가 구역 첫 문단의 run에 ctrl로 달아 두는 형태.
+                            "header" | "footer" => {
+                                let paras = sublist_paragraphs(c, section, ids);
+                                if c.tag_name().name() == "header" {
+                                    section.header = paras;
+                                } else {
+                                    section.footer = paras;
+                                }
+                            }
+                            // 쪽번호 — 글자가 아니라 필드다. 번호는 저장돼 있지 않다
+                            "autoNum" if c.attribute("numType") == Some("PAGE") => {
+                                para.runs.push(Run {
+                                    char_shape_id: shape_id,
+                                    text: String::new(),
+                                    link: None,
+                                    field: Some("page".to_string()),
+                                });
+                            }
                             // 각주는 컨트롤이다 — run 직계로도 오지만 <hp:ctrl>로 감싸 오는 쪽이
                             // 실제로 더 흔하다(우리 쓰기 백엔드도 그 형태다). 여기서 안 받으면
                             // hwpx로 저장한 각주가 다시 열 때 통째로 사라진다.
@@ -425,6 +521,7 @@ fn parse_paragraph(p: Node, section: &mut Section, ids: &IdMaps) -> Paragraph {
                                 height: dim(sz, "height").unwrap_or(0),
                                 padding: [141, 141, 141, 141],
                                 border_fill_id: None,
+                                vert_align: None,
                                 paragraphs: box_paras,
                             }]],
                             caption: Vec::new(),
@@ -446,6 +543,7 @@ fn parse_paragraph(p: Node, section: &mut Section, ids: &IdMaps) -> Paragraph {
                     char_shape_id: shape_id,
                     text,
                     link: link.clone(),
+                    field: None,
                 }),
             }
         }
@@ -538,6 +636,15 @@ fn parse_table(tbl: Node, section: &mut Section, ids: &IdMaps) -> Table {
             let addr = child("cellAddr");
             let span = child("cellSpan");
             let sz = child("cellSz");
+            // 세로 정렬은 셀이 아니라 그 안의 subList가 들고 있다 (실물 hwpx 확인)
+            let vert_align = child("subList")
+                .and_then(|sl| sl.attribute("vertAlign"))
+                .map(|v| match v {
+                    "TOP" => "top",
+                    "BOTTOM" => "bottom",
+                    _ => "middle",
+                })
+                .map(str::to_string);
 
             let row = dim(addr, "rowAddr").unwrap_or(0) as u16;
             let cell = Cell {
@@ -551,6 +658,7 @@ fn parse_table(tbl: Node, section: &mut Section, ids: &IdMaps) -> Table {
                 border_fill_id: tc
                     .attribute("borderFillIDRef")
                     .and_then(|id| ids.border_fills.get(id).copied()),
+                vert_align,
                 paragraphs: sublist_paragraphs(tc, section, ids),
             };
             if let Some(r) = table.rows.get_mut(row as usize) {

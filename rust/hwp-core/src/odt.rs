@@ -95,6 +95,9 @@ struct StyleDef {
     /// [왼쪽 들여쓰기, 첫 줄, 앞 여백, 뒤 여백] (hwpunit). 첫 줄은 음수 가능.
     margins: [Option<i32>; 4],
     background: Option<[u8; 3]>,
+    /// 셀 테두리 — `Some(None)`이 "테두리 없음"이다 (미지정과 구별한다)
+    border: Option<Option<Border>>,
+    vert_align: Option<String>,
     padding: [Option<u16>; 4],
     column_width: Option<u32>,
 }
@@ -184,9 +187,44 @@ fn read_style(st: Xml) -> StyleDef {
         background: cp
             .and_then(|n| attr(n, "background-color"))
             .and_then(hex_rgb),
+        // fo:border는 CSS와 문법이 같다 — "2pt dashed #c2352b" 또는 "none"
+        border: cp.and_then(|n| attr(n, "border")).map(read_border),
+        vert_align: cp
+            .and_then(|n| attr(n, "vertical-align"))
+            .filter(|v| matches!(*v, "top" | "middle" | "bottom"))
+            .map(str::to_string),
         padding,
         column_width: colp.and_then(|n| attr(n, "column-width")).and_then(length),
     }
+}
+
+/// `fo:border` 값 → IR 어휘. CSS 축약과 같은 문법이라 순서가 자유롭다.
+fn read_border(v: &str) -> Option<Border> {
+    let lower = v.to_ascii_lowercase();
+    if lower.trim().is_empty() || lower.contains("none") || lower.contains("hidden") {
+        return None;
+    }
+    let style = ["dashed", "dotted", "double"]
+        .into_iter()
+        .find(|k| lower.contains(k))
+        .unwrap_or("solid");
+    // 길이는 색(#rrggbb) 안의 숫자를 피해 따로 찾는다
+    let width_pt = lower
+        .split_whitespace()
+        .filter(|t| !t.starts_with('#'))
+        .find_map(|t| length(t))
+        .map(|hwp| hwp as f32 / 100.0)
+        .unwrap_or(0.75);
+    let color = lower
+        .split_whitespace()
+        .find(|t| t.starts_with('#'))
+        .and_then(hex_rgb)
+        .unwrap_or([0, 0, 0]);
+    Some(Border {
+        width_pt,
+        style: style.to_string(),
+        color,
+    })
 }
 
 #[derive(Default)]
@@ -236,6 +274,12 @@ impl Styles {
         if def.background.is_some() {
             out.background = def.background;
         }
+        if def.border.is_some() {
+            out.border = def.border.clone();
+        }
+        if def.vert_align.is_some() {
+            out.vert_align = def.vert_align.clone();
+        }
         for (slot, v) in out.padding.iter_mut().zip(def.padding) {
             if v.is_some() {
                 *slot = v;
@@ -254,6 +298,16 @@ struct Ctx<'z, 'd> {
     zip: &'z mut Zip<'d>,
     intern: Interner,
     styles: Styles,
+    /// 목록 스타일 이름 → 수준별 "번호인가"
+    list_styles: HashMap<String, Vec<bool>>,
+    /// 지금 몇 겹 목록 안인가 (0이면 목록 밖). ODF는 중첩이 곧 수준이다
+    list_level: u8,
+    /// 수준마다 번호인지 글머리표인지
+    list_ordered: Vec<bool>,
+    /// 목록 인스턴스 일련번호 — 다른 목록끼리 번호가 이어지지 않게 한다
+    list_seq: u16,
+    /// 지금 목록이 쓰는 스타일 이름 (중첩된 목록은 이걸 물려받는다)
+    list_style_name: Option<String>,
     /// 표 중첩 깊이 — WASM 스택이 얕아서 제한이 없으면 깊은 문서가 크래시한다
     depth: u8,
 }
@@ -288,16 +342,56 @@ pub fn parse_odt_document(data: &[u8]) -> Result<DocModel, String> {
     let mut section = Section::default();
     read_page_layout(styles_doc.as_ref(), &mut section);
 
+    // 목록 스타일 — 첫 수준이 number면 번호, bullet이면 글머리표.
+    // 본문(content.xml)과 styles.xml 둘 다에 있을 수 있다.
+    // 목록 스타일 — 수준마다 번호인지 글머리표인지. 정의는 `style:name`으로 이름이 붙고
+    // 본문의 `text:style-name`이 그걸 가리킨다(이름이 다른 속성이라 헷갈리기 쉽다).
+    let mut list_styles: HashMap<String, Vec<bool>> = HashMap::new();
+    for doc in [Some(&content), styles_doc.as_ref()].into_iter().flatten() {
+        for ls in doc.root_element().descendants().filter(|n| n.tag_name().name() == "list-style") {
+            let Some(name) = attr(ls, "name") else { continue };
+            let mut levels = Vec::new();
+            for lvl in ls.children().filter(|n| n.is_element()) {
+                levels.push(lvl.tag_name().name() == "list-level-style-number");
+            }
+            list_styles.insert(name.to_string(), levels);
+        }
+    }
+
     let mut ctx = Ctx {
         zip: &mut zip,
         intern: Interner::default(),
         styles,
+        list_styles,
+        list_level: 0,
+        list_ordered: Vec::new(),
+        list_seq: 0,
+        list_style_name: None,
         depth: 0,
     };
 
     let text_body = child(content.root_element(), "body")
         .and_then(|b| child(b, "text"))
         .ok_or("office:text 없음")?;
+    // 머리말·꼬리말은 styles.xml의 master-page에 산다 — 본문 흐름 밖이다
+    if let Some(sd) = styles_doc.as_ref() {
+        if let Some(master) = sd
+            .root_element()
+            .descendants()
+            .find(|n| n.tag_name().name() == "master-page")
+        {
+            for (tag, is_header) in [("header", true), ("footer", false)] {
+                let Some(band) = child(master, tag) else { continue };
+                let paras = ctx.blocks(band);
+                if is_header {
+                    section.header = paras;
+                } else {
+                    section.footer = paras;
+                }
+            }
+        }
+    }
+
     section.paragraphs = ctx.blocks(text_body);
 
     Ok(DocModel {
@@ -339,7 +433,20 @@ impl Ctx<'_, '_> {
                     });
                 }
                 // 목록: 항목 안의 문단들을 그대로 펼친다 (개요 번호는 미지원)
-                "list" | "list-item" | "section" => out.extend(self.blocks(node)),
+                // 목록은 중첩으로 수준을 표현한다 — 깊이를 세어 문단에 실어 준다
+                "list" => {
+                    if self.list_level == 0 {
+                        self.list_seq += 1;
+                        self.list_style_name = None;
+                    }
+                    let ordered = self.is_ordered(node, self.list_level);
+                    self.list_level += 1;
+                    self.list_ordered.push(ordered);
+                    out.extend(self.blocks(node));
+                    self.list_ordered.pop();
+                    self.list_level -= 1;
+                }
+                "list-item" | "list-header" | "section" => out.extend(self.blocks(node)),
                 // 페이지·프레임에 앵커된 그림은 문단 밖에 놓인다 — 빈 문단에 실어 살린다
                 "frame" => {
                     if let Some(img) = self.image(node) {
@@ -356,14 +463,49 @@ impl Ctx<'_, '_> {
         out
     }
 
+    /// 이 수준이 번호인가. 중첩된 `text:list`에는 style-name이 없고 바깥 스타일의
+    /// 해당 수준 정의를 그대로 따른다 — 그래서 이름을 들고 다니며 수준으로 찾는다.
+    fn is_ordered(&mut self, list: Xml, level: u8) -> bool {
+        if let Some(name) = attr(list, "style-name") {
+            self.list_style_name = Some(name.to_string());
+        }
+        self.list_style_name
+            .as_deref()
+            .and_then(|n| self.list_styles.get(n))
+            .and_then(|levels| levels.get(level as usize).or_else(|| levels.last()))
+            .copied()
+            .unwrap_or(true)
+    }
+
     fn paragraph(&mut self, p: Xml) -> Paragraph {
         let style = self.styles.resolve(attr(p, "style-name"), 0);
         let mut fmt = self.styles.default_text.clone();
         fmt.overlay(&style.text);
 
         let m = style.margins;
+        // 문단 머리 — text:h는 제목(개요), 목록 안의 문단은 목록 항목.
+        // 목록 수준은 XML 중첩 깊이가 곧 수준이다(ODF는 속성으로 안 적는다).
+        let head = if p.tag_name().name() == "h" {
+            ParaHead {
+                kind: HEAD_OUTLINE,
+                level: attr(p, "outline-level")
+                    .and_then(|v| v.parse::<u8>().ok())
+                    .unwrap_or(1)
+                    .saturating_sub(1),
+                id: 0,
+            }
+        } else if self.list_level > 0 {
+            ParaHead {
+                kind: if *self.list_ordered.last().unwrap_or(&true) { HEAD_NUMBER } else { HEAD_BULLET },
+                level: self.list_level - 1,
+                // 목록마다 다른 id여야 번호가 새로 시작한다 — 여는 순간 붙인 일련번호를 쓴다
+                id: self.list_seq,
+            }
+        } else {
+            ParaHead::default()
+        };
         let mut para = Paragraph {
-            shape_index: self.intern.para_shape_m(
+            shape_index: self.intern.para_shape_h(
                 style.align.unwrap_or(0),
                 ParaMargins {
                     indent: m[0].unwrap_or(0),
@@ -371,6 +513,7 @@ impl Ctx<'_, '_> {
                     space_before: m[2].unwrap_or(0),
                     space_after: m[3].unwrap_or(0),
                 },
+                head,
             ),
             ..Default::default()
         };
@@ -397,6 +540,15 @@ impl Ctx<'_, '_> {
                     self.inline(c, fmt, para, href.as_deref().or(link));
                 }
                 "bookmark-ref" | "reference-ref" => self.inline(c, fmt, para, link),
+                // 쪽번호 — 안의 글자는 마지막에 그려 둔 결과라 버리고 종류만 남긴다
+                "page-number" | "page-count" => para.runs.push(Run {
+                    char_shape_id: 0,
+                    text: String::new(),
+                    link: None,
+                    field: Some(
+                        if node.tag_name().name() == "page-count" { "pages" } else { "page" }.to_string(),
+                    ),
+                }),
                 "s" => {
                     let n: usize = attr(c, "c").and_then(|v| v.parse().ok()).unwrap_or(1);
                     self.push_text(&" ".repeat(n.min(256)), fmt, para, link);
@@ -436,6 +588,7 @@ impl Ctx<'_, '_> {
                 char_shape_id: shape,
                 text: text.to_string(),
                 link: link.map(str::to_string),
+                field: None,
             }),
         }
     }
@@ -549,7 +702,8 @@ impl Ctx<'_, '_> {
                         style.padding[2].unwrap_or(0),
                         style.padding[3].unwrap_or(0),
                     ],
-                    border_fill_id: style.background.map(|c| self.intern.fill(c)),
+                    border_fill_id: Some(self.intern.fill_border(style.background, style.border.clone())),
+                    vert_align: style.vert_align.clone(),
                     paragraphs: self.blocks(tc),
                 });
                 gcol += col_span;

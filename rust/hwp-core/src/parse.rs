@@ -197,7 +197,10 @@ fn visit_doc_info(
                 } else {
                     None
                 };
-                info.border_fills.push(BorderFill { background_color });
+                info.border_fills.push(BorderFill {
+                    background_color,
+                    border: None,
+                });
             }
             TAG_PARA_SHAPE => {
                 // HWP5 PARA_SHAPE: 속성1(u32) · 왼쪽여백 · 오른쪽여백 · 들여쓰기 ·
@@ -216,6 +219,9 @@ fn visit_doc_info(
                     first_line,
                     space_before,
                     space_after,
+                    head_kind: 0,
+                    head_level: 0,
+                    head_id: 0,
                 });
             }
             _ => {}
@@ -532,6 +538,7 @@ fn parse_table_ctrl(rec: &Record, section: &mut Section) -> Result<Table, String
                     height,
                     padding,
                     border_fill_id,
+                    vert_align: None,
                     paragraphs: cell_paras,
                 };
                 if let Some(r) = table.rows.get_mut(row as usize) {
@@ -576,6 +583,7 @@ fn digest(raw: RawParagraph) -> Paragraph {
                 char_shape_id: shape,
                 text: piece,
                 link: None,
+                field: None,
             }),
         }
     }

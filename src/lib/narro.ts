@@ -5,7 +5,7 @@
  */
 import { IR_VERSION, isSafeHref } from './ir'
 import { CELL_BORDER, CELL_VALIGN, HANGUL_ORDINALS, HF_INSET_PT, OUTLINE_SCHEME } from './ir-model'
-import { ATTR } from './model'
+import { ATTR, HEAD } from './model'
 import type { DocModel, ParagraphModel, TableModel } from './model'
 import { parseHwpJs } from './parser-js'
 
@@ -109,6 +109,34 @@ ${OUTLINE_SCHEME.map((lv, i) => {
   doc-footnote > p:first-child::before { content: counter(fn) ") "; }
 `
 
+/** 평평한 (수준, 종류) 목록 → 중첩된 ul/ol. 더 깊은 수준은 직전 항목 안으로 들어간다 */
+function listHTML(
+  items: { html: string; level: number; ordered: boolean }[],
+  start: number,
+  level = 0,
+): { xml: string; next: number } {
+  const tag = items[start]?.ordered ? 'ol' : 'ul'
+  const parts: string[] = []
+  let i = start
+  while (i < items.length && items[i].level >= level) {
+    if (items[i].level === level) {
+      parts.push(items[i].html)
+      i++
+      if (i < items.length && items[i].level > level) {
+        const sub = listHTML(items, i, level + 1)
+        // 중첩 목록은 직전 항목 **안**에 들어가야 한다
+        parts[parts.length - 1] = parts[parts.length - 1].replace(/<\/li>$/, `${sub.xml}</li>`)
+        i = sub.next
+      }
+    } else {
+      const sub = listHTML(items, i, level + 1)
+      parts.push(`<li>${sub.xml}</li>`)
+      i = sub.next
+    }
+  }
+  return { xml: `<${tag}>${parts.join('')}</${tag}>`, next: i }
+}
+
 function esc(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 }
@@ -159,6 +187,7 @@ class Emitter {
   private paragraphHTML(para: ParagraphModel): string {
     this.stats.paragraphs++
     const shape = this.model.info.paraShapes[para.shapeIndex]
+    const head = shape?.headKind ?? HEAD.none
     const align = TEXT_ALIGN[shape?.align ?? 0]
     const styles: string[] = []
     if (align && align !== 'justify') styles.push(`text-align:${align}`)
@@ -174,15 +203,20 @@ class Emitter {
      * 그대로 흘리면 미리보기·docx·odt가 전부 왼쪽으로 삐져나간다.
      */
     const firstLinePt = Math.max(pt(shape?.firstLine), -indentPt)
-    if (indentPt) styles.push(`margin-left:${indentPt.toFixed(1)}pt`)
-    if (firstLinePt) styles.push(`text-indent:${firstLinePt.toFixed(1)}pt`)
+    // 목록 항목의 들여쓰기는 **목록 어휘가 만든다** — 문서에서 온 값을 그대로 흘리면
+    // 뷰어의 수준별 들여쓰기와 겹쳐 두 번 밀린다. (번호와 같은 이유로 파생물이다.)
+    const isListItem = head === HEAD.number || head === HEAD.bullet
+    if (indentPt && !isListItem) styles.push(`margin-left:${indentPt.toFixed(1)}pt`)
+    if (firstLinePt && !isListItem) styles.push(`text-indent:${firstLinePt.toFixed(1)}pt`)
     if (pt(shape?.spaceBefore)) styles.push(`margin-top:${pt(shape?.spaceBefore).toFixed(1)}pt`)
     if (pt(shape?.spaceAfter)) styles.push(`margin-bottom:${pt(shape?.spaceAfter).toFixed(1)}pt`)
     const styleAttr = styles.length ? ` style="${styles.join(';')}"` : ''
 
     const runs = para.runs
-      .filter((r) => r.text.length > 0)
+      .filter((r) => r.text.length > 0 || r.field)
       .map((r) => {
+        // 쪽번호 등 계산 필드 — 글자가 아니다. 번호는 저장하지 않는다(규칙 2)
+        if (r.field) return `<doc-field data-kind="${esc(r.field)}"></doc-field>`
         this.stats.chars += r.text.length
         const style = this.charRunStyle(r.charShapeId)
         let html = `<span${style ? ` style="${style}"` : ''}>${esc(r.text).replace(/\n/g, '<br>')}</span>`
@@ -200,7 +234,7 @@ class Emitter {
     const fnRefs = (para.footnotes ?? [])
       .map((fn) => {
         const n = ++this.fnSeq
-        const content = fn.paragraphs.map((p) => this.paragraphHTML(p)).join('')
+        const content = this.blocksHTML(fn.paragraphs)
         this.fnBlocks.push(`<doc-footnote id="fn${n}" data-id="${this.nextId()}">${content}</doc-footnote>`)
         // 번호는 담지 않는다 — 뷰어 CSS counter가 그린다(IR-SPEC 규칙 2).
         // 중간에 각주를 하나 끼우면 뒤 번호가 전부 밀리는데, 그때 문서를 고쳐 쓰지 않으려는 것이다.
@@ -208,7 +242,13 @@ class Emitter {
       })
       .join('')
     const tables = para.tables.map((t) => this.tableHTML(t))
-    const p = `<p data-id="${this.nextId()}"${styleAttr}>${runs.join('')}${fnRefs}${images}</p>`
+    // 개요 수준은 제목으로, 목록 항목은 li로 되돌린다. 표를 품은 문단은 목록으로 보지 않는다
+    // (목록 한가운데 표가 오면 어차피 목록이 끊긴다).
+    const level = Math.min((shape?.headLevel ?? 0) + 1, 6)
+    const tag =
+      head === HEAD.outline ? `h${level}` : isListItem && !tables.length ? 'li' : 'p'
+    const numAttr = head === HEAD.outline ? ' data-num="outline"' : ''
+    const p = `<${tag} data-id="${this.nextId()}"${numAttr}${styleAttr}>${runs.join('')}${fnRefs}${images}</${tag}>`
     const hasOwnContent = runs.length > 0 || images.length > 0 || fnRefs.length > 0
     return tables.length ? (hasOwnContent ? p : '') + tables.join('') : p
   }
@@ -235,6 +275,42 @@ class Emitter {
     return `<img src="data:${mime};base64,${bin.data}" alt=""${style}>`
   }
 
+  /**
+   * 문단 목록 → 블록 HTML. 연속된 목록 항목을 `<ul>`/`<ol>` 트리로 되접는다.
+   *
+   * 모델은 문단마다 "몇 수준의 무슨 머리"만 들고 있다(포맷들이 그렇게 저장한다).
+   * IR은 진짜 중첩을 요구하므로 여기서 한 번 접는다 — html2odt가 반대 방향으로 하는 일과 같다.
+   */
+  private blocksHTML(paras: ParagraphModel[]): string {
+    const kindOf = (p: ParagraphModel) => {
+      const sh = this.model.info.paraShapes[p.shapeIndex]
+      const k = sh?.headKind ?? HEAD.none
+      // 표를 품은 문단은 목록으로 다루지 않는다 (paragraphHTML과 같은 규칙)
+      if ((k !== HEAD.number && k !== HEAD.bullet) || p.tables.length) return null
+      return { ordered: k === HEAD.number, level: sh?.headLevel ?? 0, id: sh?.headId ?? 0 }
+    }
+
+    const out: string[] = []
+    for (let i = 0; i < paras.length; ) {
+      const first = kindOf(paras[i])
+      if (!first) {
+        out.push(this.paragraphHTML(paras[i]))
+        i++
+        continue
+      }
+      // 같은 목록에 속한 연속 문단을 모은다 — 정의 id가 바뀌면 다른 목록이다
+      const items: { html: string; level: number; ordered: boolean }[] = []
+      while (i < paras.length) {
+        const k = kindOf(paras[i])
+        if (!k || k.id !== first.id) break
+        items.push({ html: this.paragraphHTML(paras[i]), level: k.level, ordered: k.ordered })
+        i++
+      }
+      out.push(listHTML(items, 0).xml)
+    }
+    return out.join('')
+  }
+
   private tableHTML(table: TableModel): string {
     this.stats.tables++
     const rows = table.rows.map((row) => {
@@ -246,20 +322,29 @@ class Emitter {
         styles.push(
           `padding:${cell.padding.map((p) => `${Math.max(p / 100, 2).toFixed(1)}pt`).join(' ')}`,
         )
-        const bg =
-          cell.borderFillId != null
-            ? this.model.info.borderFills[cell.borderFillId]?.backgroundColor
-            : null
+        const fill = cell.borderFillId != null ? this.model.info.borderFills[cell.borderFillId] : undefined
+        const bg = fill?.backgroundColor
         if (bg) styles.push(`background:rgb(${bg[0]}, ${bg[1]}, ${bg[2]})`)
+        // 테두리: 리더가 읽었으면(`border` 키가 있으면) 그 값을, 읽었는데 없으면 none.
+        // 키 자체가 없으면 그 리더가 아직 테두리를 안 읽는 것이라 기본값에 맡긴다.
+        if (fill && 'border' in fill) {
+          const b = fill.border
+          styles.push(
+            b
+              ? `border:${b.widthPt.toFixed(2)}pt ${b.style} rgb(${b.color[0]}, ${b.color[1]}, ${b.color[2]})`
+              : 'border:none',
+          )
+        }
+        if (cell.vertAlign && cell.vertAlign !== 'middle') styles.push(`vertical-align:${cell.vertAlign}`)
         const span =
           (cell.colSpan > 1 ? ` colspan="${cell.colSpan}"` : '') +
           (cell.rowSpan > 1 ? ` rowspan="${cell.rowSpan}"` : '')
-        const inner = cell.paragraphs.map((p) => this.paragraphHTML(p)).join('')
+        const inner = this.blocksHTML(cell.paragraphs)
         return `<td${span} style="${styles.join(';')}">${inner}</td>`
       })
       return `<tr>${cells.join('')}</tr>`
     })
-    const caption = (table.caption ?? []).map((p) => this.paragraphHTML(p)).join('')
+    const caption = this.blocksHTML(table.caption ?? [])
     return `<table class="hwp-table" data-id="${this.nextId()}">${rows.join('')}</table>${caption}`
   }
 
@@ -273,8 +358,12 @@ class Emitter {
           `padding:${inch(s.paddingTop + s.headerPadding)} ${inch(s.paddingRight)} ${inch(s.paddingBottom)} ${inch(s.paddingLeft)}`,
         ].join(';')
         this.fnBlocks = []
-        const content = s.paragraphs.map((p) => this.paragraphHTML(p)).join('')
-        return `<doc-section class="hwp-page" data-ir="${IR_VERSION}" style="${style}">${content}${this.fnBlocks.join('')}</doc-section>`
+        // 머리말·꼬리말은 본문 흐름 밖이라 구역 직계로 낸다 (IR 구조 규칙)
+        const band = (tag: 'doc-header' | 'doc-footer', paras: ParagraphModel[] | undefined) =>
+          paras && paras.length ? `<${tag}>${this.blocksHTML(paras)}</${tag}>` : ''
+        const head = band('doc-header', s.header) + band('doc-footer', s.footer)
+        const content = this.blocksHTML(s.paragraphs)
+        return `<doc-section class="hwp-page" data-ir="${IR_VERSION}" style="${style}">${head}${content}${this.fnBlocks.join('')}</doc-section>`
       })
       .join('')
 

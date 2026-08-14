@@ -26,6 +26,11 @@ run 스타일 충실도가 더 높다 (예: 양식 안내문의 빨간 기울임
 |---|:--:|:--:|:--:|:--:|:--:|
 | 읽기 → IR | ✓ | ✓ | ✓ | ✓ | ✓ |
 | IR → 쓰기 | ✗ | ✗ | ✓ | ✓ | ✓ |
+| 개요·목록·셀테두리·머리말 **읽기** | ✗ | ✗ | ✓ | ✓ | ✓ |
+
+**쓰기만 되고 읽기가 없으면 열 때마다 서식이 깎인다.** 그래서 어휘를 늘릴 때마다 리더도
+같이 채운다 — `bun run reread-sim`이 IR → 파일 → **다시 IR**을 세 포맷에서 전수 대조한다.
+바이너리 둘(`.hwp`·`.doc`)은 아직이라 [TODO](docs/TODO.md) 검증 부채에 있다.
 
 읽기 5 × 쓰기 3이 전부 조합되므로 **doc → odt, hwp → docx** 같은 변환이 모두 성립한다.
 `.hwp`/`.doc` 쓰기는 OLE 바이너리 직렬화라 이 범위 밖 — 필요하면 hwpx/docx로 저장한 뒤
@@ -75,6 +80,7 @@ bun run outline-sim                 # 개요 번호 — 스킴 진실원(뷰어 
 bun run cell-sim                    # 표 셀 테두리·세로 정렬 — 셀마다 다른 서식이 3종에 도달하는지
 bun run footnote-sim                # 각주 — 내용 보존 + 번호를 저장하지 않는지 (3종)
 bun run hf-sim                      # 머리말·꼬리말·쪽번호 — 본문 밖 유지 + 조판 사본 걷기
+bun run reread-sim                  # 읽기 대칭 — IR → 파일 → 다시 IR (세 포맷 전수 대조)
 bun run mcp                         # MCP 서버 (stdio) — 프롬프트에서 문서 만들기
 bun run mcp-sim                     # MCP 왕복 검증 (도구 5종 + dev 서버 + 편집기 링크)
 bun run shots [문서] [출력]          # 진짜 Chrome에 편집기를 띄워 화면 캡처 (dev 서버 먼저)
@@ -306,6 +312,7 @@ scripts/outline-sim.ts # CLI — 개요 번호 계약 + 스킴 진실원 일치(
 scripts/cell-sim.ts   # CLI — 표 셀 테두리·세로 정렬이 셀마다 3종에 도달하는지
 scripts/footnote-sim.ts # CLI — 각주 내용 보존 + 번호 비저장 (쓰기 3종)
 scripts/headerfooter-sim.ts # CLI — 머리말·꼬리말·쪽번호 (본문 밖 유지 + 조판 사본 걷기)
+scripts/reread-sim.ts # CLI — 읽기 대칭 (IR → 파일 → 다시 IR, 세 포맷)
 scripts/shots.ts      # CLI — 설치된 Chrome으로 편집기 화면 캡처 (눈으로 보는 검증)
 scripts/mcp-sim.ts    # CLI — 진짜 MCP 클라이언트로 서버 왕복 (도구 5종 + 편집기 링크)
 mcp/server.ts         # MCP(stdio) — narro_guide·write·read·open·viewer

@@ -41,8 +41,21 @@ export interface CharShapeModel {
 /** CharShapeModel.attr 비트 — Rust model.rs의 ATTR_* 상수와 같은 값 */
 export const ATTR = { italic: 1 << 0, bold: 1 << 1, super: 1 << 14, sub: 1 << 15 } as const
 
+export interface BorderModel {
+  /** pt */
+  widthPt: number
+  /** solid · dashed · dotted · double */
+  style: string
+  color: [number, number, number]
+}
+
 export interface BorderFillModel {
   backgroundColor: [number, number, number] | null
+  /**
+   * 셀 테두리 — 세 값이 다르다.
+   * `undefined` = 그 리더가 아직 테두리를 안 읽는다 · `null` = 테두리 없음 · 객체 = 그 테두리.
+   */
+  border?: BorderModel | null
 }
 
 export interface ParaShapeModel {
@@ -56,7 +69,16 @@ export interface ParaShapeModel {
   spaceBefore?: number
   /** 문단 뒤 여백 (hwpunit) */
   spaceAfter?: number
+  /** 문단 머리 — 0 없음 · 1 개요 · 2 문단번호 · 3 글머리표 */
+  headKind?: number
+  /** 문단 머리 수준 — 0부터 */
+  headLevel?: number
+  /** 번호 매김 정의 id — 같은 id끼리 번호가 이어진다 */
+  headId?: number
 }
+
+/** ParaShapeModel.headKind 값 — Rust model.rs의 HEAD_* 상수와 같다 */
+export const HEAD = { none: 0, outline: 1, number: 2, bullet: 3 } as const
 
 export interface SectionModel {
   width: number
@@ -67,6 +89,9 @@ export interface SectionModel {
   paddingBottom: number
   headerPadding: number
   footerPadding: number
+  /** 머리말·꼬리말 — 본문 흐름 밖 */
+  header?: ParagraphModel[]
+  footer?: ParagraphModel[]
   paragraphs: ParagraphModel[]
 }
 
@@ -95,6 +120,8 @@ export interface RunModel {
   text: string
   /** 하이퍼링크 대상 (없으면 필드 자체가 없다) */
   link?: string | null
+  /** 계산 필드 — page · pages. 글자 없는 런이다 */
+  field?: string | null
 }
 
 export interface TableModel {
@@ -115,5 +142,7 @@ export interface CellModel {
   height: number
   padding: [number, number, number, number]
   borderFillId: number | null
+  /** top · middle · bottom */
+  vertAlign?: string
   paragraphs: ParagraphModel[]
 }

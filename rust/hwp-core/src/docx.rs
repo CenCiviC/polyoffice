@@ -237,8 +237,53 @@ struct Ctx<'z, 'd> {
     /// r:id → 외부 주소. 하이퍼링크는 `TargetMode="External"`이라 위 지도에 안 들어간다.
     ext_rels: HashMap<String, String>,
     styles: Styles,
+    numbering: Numbering,
     /// 표 안의 표 중첩 깊이 — WASM 스택이 얕아서 제한이 없으면 깊은 문서가 크래시한다
     depth: u8,
+}
+
+/// numbering.xml — numId·수준 → 글머리표인가.
+/// 번호와 글머리표는 IR에서 `ol`/`ul`로 갈리므로 이 구분만 있으면 된다.
+#[derive(Default)]
+struct Numbering {
+    bullets: HashMap<(u16, u8), bool>,
+}
+
+impl Numbering {
+    fn load(doc: Option<&Document>) -> Self {
+        let mut out = Self::default();
+        let Some(d) = doc else { return out };
+        let root = d.root_element();
+        // abstractNumId → 수준별 글머리표 여부
+        let mut abstracts: HashMap<&str, HashMap<u8, bool>> = HashMap::new();
+        for an in children(root, "abstractNum") {
+            let Some(id) = attr(an, "abstractNumId") else { continue };
+            let mut levels = HashMap::new();
+            for lvl in children(an, "lvl") {
+                let n = num::<u8>(Some(lvl), "ilvl").unwrap_or(0);
+                let fmt = child(lvl, "numFmt").and_then(|f| attr(f, "val")).unwrap_or("decimal");
+                levels.insert(n, fmt == "bullet" || fmt == "none");
+            }
+            abstracts.insert(id, levels);
+        }
+        // num(인스턴스) → abstractNum
+        for num_el in children(root, "num") {
+            let Some(id) = num::<u16>(Some(num_el), "numId") else { continue };
+            let Some(aid) = child(num_el, "abstractNumId").and_then(|a| attr(a, "val")) else {
+                continue;
+            };
+            if let Some(levels) = abstracts.get(aid) {
+                for (lvl, bullet) in levels {
+                    out.bullets.insert((id, *lvl), *bullet);
+                }
+            }
+        }
+        out
+    }
+
+    fn is_bullet(&self, id: u16, level: u8) -> bool {
+        self.bullets.get(&(id, level)).copied().unwrap_or(false)
+    }
 }
 
 /// 실문서의 중첩은 서너 겹이면 충분하다. 넘어가면 더 파고들지 않고 잘라낸다.
@@ -250,12 +295,14 @@ pub fn parse_docx_document(data: &[u8]) -> Result<DocModel, String> {
     let styles_xml = zipfs::text(&mut zip, "word/styles.xml").unwrap_or_default();
     let footnotes_xml = zipfs::text(&mut zip, "word/footnotes.xml").unwrap_or_default();
     let rels_xml = zipfs::text(&mut zip, "word/_rels/document.xml.rels").unwrap_or_default();
+    let numbering_xml = zipfs::text(&mut zip, "word/numbering.xml").unwrap_or_default();
 
     check_depth(&doc_xml, "word/document.xml")?;
     let doc = Document::parse(&doc_xml).map_err(|e| format!("word/document.xml 파싱 실패: {e}"))?;
     let styles_doc = Document::parse(&styles_xml).ok();
     let footnotes_doc = Document::parse(&footnotes_xml).ok();
     let rels_doc = Document::parse(&rels_xml).ok();
+    let numbering_doc = Document::parse(&numbering_xml).ok();
 
     let mut rels = HashMap::new();
     let mut ext_rels = HashMap::new();
@@ -283,6 +330,7 @@ pub fn parse_docx_document(data: &[u8]) -> Result<DocModel, String> {
         rels,
         ext_rels,
         styles: Styles::load(styles_doc.as_ref()),
+        numbering: Numbering::load(numbering_doc.as_ref()),
         depth: 0,
     };
 
@@ -304,7 +352,32 @@ pub fn parse_docx_document(data: &[u8]) -> Result<DocModel, String> {
 
     let body = child(doc.root_element(), "body").ok_or("w:body 없음")?;
     let mut section = Section::default();
-    read_sect_pr(child(body, "sectPr"), &mut section);
+    let sect_pr = child(body, "sectPr");
+    read_sect_pr(sect_pr, &mut section);
+
+    // 머리말·꼬리말은 별도 파트다 — sectPr의 관계 참조를 따라간다.
+    // 본문보다 먼저 읽어야 문단 순서가 아니라 구역 속성으로 남는다.
+    for (tag, root_name) in [("headerReference", "hdr"), ("footerReference", "ftr")] {
+        let Some(rid) = sect_pr
+            .and_then(|sp| children(sp, tag).find(|r| attr(*r, "type") != Some("first")))
+            .and_then(|r| attr(r, "id"))
+        else {
+            continue;
+        };
+        let Some(path) = ctx.rels.get(rid).cloned() else { continue };
+        let Ok(xml) = zipfs::text(ctx.zip, &path) else { continue };
+        let Ok(part) = Document::parse(&xml) else { continue };
+        if part.root_element().tag_name().name() != root_name {
+            continue;
+        }
+        let paras = ctx.blocks(part.root_element(), &footnotes);
+        if root_name == "hdr" {
+            section.header = paras;
+        } else {
+            section.footer = paras;
+        }
+    }
+
     section.paragraphs = ctx.blocks(body, &footnotes);
 
     Ok(DocModel {
@@ -378,8 +451,11 @@ impl Ctx<'_, '_> {
         let mut margins = self.styles.default_margins;
         margins.overlay(&style_margins);
         margins.overlay(&read_margins(ppr));
+        // 문단 머리 — 제목은 w:outlineLvl(또는 Heading 스타일), 목록은 w:numPr.
+        // 둘 다 없으면 보통 문단이다.
+        let head = read_head(ppr, style_id, &self.numbering);
         let mut para = Paragraph {
-            shape_index: self.intern.para_shape_m(align, margins.to_margins()),
+            shape_index: self.intern.para_shape_h(align, margins.to_margins(), head),
             ..Default::default()
         };
 
@@ -413,6 +489,28 @@ impl Ctx<'_, '_> {
                 }
                 "smartTag" | "ins" | "sdt" | "sdtContent" | "bookmarkStart" => {
                     self.runs_of(node, base, para, fns, link)
+                }
+                // 쪽번호 필드 — 안에 든 글자는 Word가 마지막에 그려 둔 **결과**라 버린다.
+                // 종류만 남기고 숫자는 렌더가 다시 센다(IR-SPEC 규칙 2).
+                "fldSimple" => {
+                    let instr = attr(node, "instr").unwrap_or("").to_ascii_uppercase();
+                    let kind = if instr.contains("NUMPAGES") {
+                        Some("pages")
+                    } else if instr.contains("PAGE") {
+                        Some("page")
+                    } else {
+                        None
+                    };
+                    match kind {
+                        Some(k) => para.runs.push(Run {
+                            char_shape_id: 0,
+                            text: String::new(),
+                            link: None,
+                            field: Some(k.to_string()),
+                        }),
+                        // 아는 필드가 아니면 안쪽 글자를 그대로 살린다
+                        None => self.runs_of(node, base, para, fns, link),
+                    }
                 }
                 _ => {}
             }
@@ -475,6 +573,7 @@ impl Ctx<'_, '_> {
                     char_shape_id: shape,
                     text,
                     link: link.map(str::to_string),
+                    field: None,
                 }),
             }
         }
@@ -534,6 +633,8 @@ impl Ctx<'_, '_> {
     }
 
     fn table_inner(&mut self, tbl: Xml, fns: &Footnotes) -> Table {
+        // 표 기본 테두리 — 셀이 tcBorders로 덮지 않으면 이걸 쓴다
+        let tbl_borders = child(tbl, "tblPr").and_then(|p| child(p, "tblBorders"));
         let grid: Vec<u32> = child(tbl, "tblGrid")
             .map(|g| {
                 children(g, "gridCol")
@@ -596,6 +697,26 @@ impl Ctx<'_, '_> {
                     .and_then(|p| child(p, "shd"))
                     .and_then(|s| attr(s, "fill"))
                     .and_then(hex_rgb);
+                // 테두리: 셀 지정(tcBorders)이 표 기본(tblBorders)을 덮는다. 네 변 중 대표 하나
+                let border = Some(
+                    ["top", "left", "bottom", "right"]
+                        .iter()
+                        .filter_map(|side| {
+                            pr.and_then(|p| child(p, "tcBorders"))
+                                .and_then(|b| child(b, side))
+                                .or_else(|| tbl_borders.and_then(|b| child(b, side)))
+                        })
+                        .find_map(read_border),
+                );
+                let vert_align = pr
+                    .and_then(|p| child(p, "vAlign"))
+                    .and_then(|v| attr(v, "val"))
+                    .map(|v| match v {
+                        "top" => "top",
+                        "bottom" => "bottom",
+                        _ => "middle",
+                    })
+                    .map(str::to_string);
 
                 let cell = Cell {
                     col: gcol,
@@ -605,7 +726,8 @@ impl Ctx<'_, '_> {
                     width,
                     height: 0,
                     padding: cell_margin(pr.and_then(|p| child(p, "tcMar")), default_padding),
-                    border_fill_id: background.map(|c| self.intern.fill(c)),
+                    border_fill_id: Some(self.intern.fill_border(background, border)),
+                    vert_align,
                     paragraphs: self.blocks(tc, fns),
                 };
                 table.rows[ri].push(cell);
@@ -617,6 +739,52 @@ impl Ctx<'_, '_> {
         }
         table
     }
+}
+
+/// `<w:top w:val w:sz w:color>` 한 변 → IR 어휘. sz는 1/8pt, `nil`/`none`이면 테두리 없음.
+fn read_border(n: Xml) -> Option<Border> {
+    let style = match attr(n, "val")? {
+        "nil" | "none" => return None,
+        "dashed" | "dashSmallGap" | "dotDash" | "dotDotDash" => "dashed",
+        "dotted" => "dotted",
+        v if v.starts_with("double") || v == "triple" => "double",
+        _ => "solid",
+    };
+    let color = attr(n, "color").filter(|c| *c != "auto").and_then(hex_rgb);
+    Some(Border {
+        width_pt: num::<u32>(Some(n), "sz").unwrap_or(4) as f32 / 8.0,
+        style: style.to_string(),
+        color: color.unwrap_or([0, 0, 0]),
+    })
+}
+
+/// 문단 머리 — 제목은 `w:outlineLvl`(없으면 Heading 스타일 이름), 목록은 `w:numPr`.
+/// 번호인지 글머리표인지는 numbering.xml의 numFmt가 안다.
+fn read_head(ppr: Option<Xml>, style_id: Option<&str>, numbering: &Numbering) -> ParaHead {
+    if let Some(lvl) = ppr
+        .and_then(|pr| child(pr, "outlineLvl"))
+        .and_then(|n| num::<u8>(Some(n), "val"))
+        .or_else(|| {
+            style_id
+                .and_then(|s| s.strip_prefix("Heading"))
+                .or_else(|| style_id.and_then(|s| s.strip_prefix("heading ")))
+                .and_then(|n| n.parse::<u8>().ok())
+                .map(|n| n.saturating_sub(1))
+        })
+    {
+        return ParaHead { kind: HEAD_OUTLINE, level: lvl.min(9), id: 0 };
+    }
+    let Some(numpr) = ppr.and_then(|pr| child(pr, "numPr")) else {
+        return ParaHead::default();
+    };
+    let level = child(numpr, "ilvl").and_then(|n| num::<u8>(Some(n), "val")).unwrap_or(0);
+    let id = child(numpr, "numId").and_then(|n| num::<u16>(Some(n), "val")).unwrap_or(0);
+    // numId 0은 "번호 없음"이라는 뜻이다 (Word 관례)
+    if id == 0 {
+        return ParaHead::default();
+    }
+    let bullet = numbering.is_bullet(id, level);
+    ParaHead { kind: if bullet { HEAD_BULLET } else { HEAD_NUMBER }, level, id }
 }
 
 /// w:tcMar/w:tblCellMar → [left, right, top, bottom] (hwpunit)

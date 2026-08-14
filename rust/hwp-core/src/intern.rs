@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use base64::Engine as _;
 
-use crate::model::{BinData, BorderFill, CharShape, DocInfo, ParaMargins, ParaShape};
+use crate::model::{BinData, Border, BorderFill, CharShape, DocInfo, ParaHead, ParaMargins, ParaShape};
 
 /// 글꼴 미지정. fontFaces 범위 밖이라 방출기가 font-family를 넣지 않는다.
 pub const NO_FONT: u16 = u16::MAX;
@@ -18,8 +18,8 @@ pub struct Interner {
     pub info: DocInfo,
     fonts: HashMap<String, u16>,
     shapes: HashMap<(i32, [u8; 3], u32, u16), u32>,
-    paras: HashMap<(u8, ParaMargins), u16>,
-    fills: HashMap<[u8; 3], u16>,
+    paras: HashMap<(u8, ParaMargins, ParaHead), u16>,
+    border_keys: HashMap<String, u16>,
     bins: HashMap<String, u16>,
 }
 
@@ -64,7 +64,13 @@ impl Interner {
     }
 
     pub fn para_shape_m(&mut self, align: u8, m: ParaMargins) -> u16 {
-        let key = (align, m);
+        self.para_shape_h(align, m, ParaHead::default())
+    }
+
+    /// 문단 머리(개요·번호·글머리표)까지 담은 문단모양.
+    /// 머리가 다르면 다른 모양이다 — 같은 여백이어도 합치면 안 된다.
+    pub fn para_shape_h(&mut self, align: u8, m: ParaMargins, head: ParaHead) -> u16 {
+        let key = (align, m, head);
         if let Some(&id) = self.paras.get(&key) {
             return id;
         }
@@ -75,20 +81,37 @@ impl Interner {
             first_line: m.first_line,
             space_before: m.space_before,
             space_after: m.space_after,
+            head_kind: head.kind,
+            head_level: head.level,
+            head_id: head.id,
         });
         self.paras.insert(key, id);
         id
     }
 
     pub fn fill(&mut self, color: [u8; 3]) -> u16 {
-        if let Some(&id) = self.fills.get(&color) {
+        self.fill_border(Some(color), None)
+    }
+
+    /// 배경 + 테두리. IR은 셀마다 둘을 함께 들고 다니므로 하나로 묶어 등록한다.
+    pub fn fill_border(&mut self, color: Option<[u8; 3]>, border: Option<Option<Border>>) -> u16 {
+        let key = format!(
+            "{color:?}|{}",
+            match border.as_ref() {
+                None => "-".to_string(),
+                Some(None) => "none".to_string(),
+                Some(Some(b)) => format!("{:.2}:{}:{:?}", b.width_pt, b.style, b.color),
+            }
+        );
+        if let Some(&id) = self.border_keys.get(&key) {
             return id;
         }
         let id = self.info.border_fills.len() as u16;
         self.info.border_fills.push(BorderFill {
-            background_color: Some(color),
+            background_color: color,
+            border,
         });
-        self.fills.insert(color, id);
+        self.border_keys.insert(key, id);
         id
     }
 

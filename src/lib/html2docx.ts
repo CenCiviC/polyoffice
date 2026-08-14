@@ -375,6 +375,9 @@ class DocxWriter {
     if (jc && jc !== 'left') parts.push(`<w:jc w:val="${jc}"/>`)
     const ind = indentXml(para.indentPt, para.firstLinePt)
     if (ind) parts.push(ind)
+    // 제목은 개요 수준을 명시한다 — 이게 없으면 Word가 제목으로 안 보고(탐색 창·목차),
+    // 우리 리더도 다시 열 때 제목인 줄 모른다. CT_PPr에서 outlineLvl은 jc 뒤다.
+    if (para.heading > 0) parts.push(`<w:outlineLvl w:val="${Math.min(para.heading, 9) - 1}"/>`)
     const pPr = `<w:pPr>${parts.join('')}</w:pPr>`
     const runs = this.runsXml(para.runs)
     const imgs = para.images.map((im) => this.imageXml(im, ++seq.n)).join('')

@@ -60,6 +60,8 @@ pub fn parse_doc_document(data: &[u8]) -> Result<DocModel, String> {
         padding_bottom: 7200,
         header_padding: 3600,
         footer_padding: 3600,
+        header: Vec::new(),
+        footer: Vec::new(),
         paragraphs,
     };
 
@@ -1108,6 +1110,7 @@ impl Builder {
                         char_shape_id: id,
                         text,
                         link: None,
+                        field: None,
                     });
                 }
             }
@@ -1311,6 +1314,7 @@ impl Builder {
                     height: 0,
                     padding: [108 * TWIP as u16, 108 * TWIP as u16, 0, 0],
                     border_fill_id: None,
+                    vert_align: None,
                     paragraphs,
                 });
                 if flags.vert_restart {
@@ -1332,6 +1336,7 @@ fn push_char(pending: &mut Option<(u32, String)>, ch: char, shape: u32, runs: &m
                         char_shape_id: id,
                         text,
                         link: None,
+                        field: None,
                     });
                 }
             }
