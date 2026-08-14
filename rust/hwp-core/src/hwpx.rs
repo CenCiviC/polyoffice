@@ -372,6 +372,17 @@ fn parse_paragraph(p: Node, section: &mut Section, ids: &IdMaps) -> Paragraph {
                                 link = hyperlink_target(c)
                             }
                             "fieldEnd" => link = None,
+                            // 각주는 컨트롤이다 — run 직계로도 오지만 <hp:ctrl>로 감싸 오는 쪽이
+                            // 실제로 더 흔하다(우리 쓰기 백엔드도 그 형태다). 여기서 안 받으면
+                            // hwpx로 저장한 각주가 다시 열 때 통째로 사라진다.
+                            "footNote" | "endNote" => {
+                                let fn_paras = sublist_paragraphs(c, section, ids);
+                                if !fn_paras.is_empty() {
+                                    para.footnotes.push(Footnote {
+                                        paragraphs: fn_paras,
+                                    });
+                                }
+                            }
                             _ => {}
                         }
                     }
