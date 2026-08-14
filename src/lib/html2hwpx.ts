@@ -58,6 +58,8 @@ function rgbToHex(rgb: string): string | null {
 
 function ptOf(v: string | undefined | null): number | null {
   if (!v) return null
+  // 백분율은 기준 길이를 알아야 푼다 — ir-model의 toPt와 같은 규칙
+  if (v.includes('%')) return null
   // 부호를 반드시 받는다 — 내어쓰기(text-indent 음수)에서 -가 빠지면 값이 조용히 뒤집힌다
   const m = v.match(/(-?[\d.]+)\s*(pt|in|mm)?/)
   if (!m) return null
@@ -116,6 +118,14 @@ const HWPX_BORDER_TYPE: Record<IrBorder['style'], string> = {
   dashed: 'DASH',
   dotted: 'DOT',
   double: 'DOUBLE_SLIM',
+}
+
+/** 길이 — 백분율이면 기준 길이에 대해 푼다 */
+function ptOfBase(v: string | undefined | null, basePt: number): number | null {
+  if (!v) return null
+  const pct = /(-?[\d.]+)\s*%/.exec(v)
+  if (pct) return (parseFloat(pct[1]) / 100) * basePt
+  return ptOf(v)
 }
 
 /** 셀 세로 정렬 — `hp:subList`의 vertAlign (실물 hwpx에서 CENTER·TOP 확인) */
@@ -553,6 +563,8 @@ class SectionBuilder {
 
   /** doc-footnote id → 내용 요소 (본문 흐름에서 제외하고 참조 지점에 인라인 삽입) */
   footnotes = new Map<string, Element>()
+  /** 구역 본문 가용 폭(pt) — 표·셀의 백분율 폭을 푸는 기준 */
+  availableWidthPt = 451
 
   constructor(w: HwpxWriter) {
     this.w = w
@@ -709,6 +721,15 @@ class SectionBuilder {
     const cellsXml: string[][] = []
     let colCnt = 0
 
+    // 표 전체 너비. 셀 폭을 안 준 문서가 흔해서(`<table style="width:100%">`) 그때는
+    // 남은 폭을 균등 분배한다 — 예전에는 셀마다 100pt로 못 박아 좁은 표가 나갔다.
+    const firstRow = Array.from(rows[0]?.children ?? []).filter((x) => x.tagName === 'TD')
+    const declared = firstRow.map((td) => ptOfBase(tdStyle(td as Element, 'width'), this.availableWidthPt) ?? 0)
+    const tableWidth = ptOfBase(tdStyle(table, 'width'), this.availableWidthPt) ?? this.availableWidthPt
+    const blanks = declared.filter((w) => !w).length
+    const evenWidth = blanks ? Math.max(0, tableWidth - declared.reduce((a, b) => a + b, 0)) / blanks : 0
+    const firstRowWidth = declared.reduce((sum, w) => sum + (w || evenWidth || 100), 0)
+
     rows.forEach((tr, r) => {
       const rowXml: string[] = []
       let c = 0
@@ -719,7 +740,7 @@ class SectionBuilder {
         for (let rr = r; rr < r + rowSpan; rr++)
           for (let cc = c; cc < c + colSpan; cc++) occupied.set(`${rr},${cc}`, true)
 
-        const wPt = ptOf(tdStyle(td, 'width')) ?? 100
+        const wPt = ptOfBase(tdStyle(td, 'width'), this.availableWidthPt) ?? 0
         const hPt = ptOf(tdStyle(td, 'height')) ?? 15
         const bg = tdStyle(td, 'background')
         const rawBorder = tdStyle(td, 'border')
@@ -736,7 +757,7 @@ class SectionBuilder {
             `<hp:subList id="${this.w.nextObjId()}" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="${HWPX_VALIGN[vAlign] ?? 'CENTER'}" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">${inner}</hp:subList>` +
             `<hp:cellAddr colAddr="${c}" rowAddr="${r}"/>` +
             `<hp:cellSpan colSpan="${colSpan}" rowSpan="${rowSpan}"/>` +
-            `<hp:cellSz width="${Math.round(wPt * 100)}" height="${Math.round(hPt * 100)}"/>` +
+            `<hp:cellSz width="${Math.round((wPt || evenWidth || 100) * 100)}" height="${Math.round(hPt * 100)}"/>` +
             `<hp:cellMargin left="${hwpUnit(padL)}" right="${hwpUnit(padR)}" top="${hwpUnit(padT)}" bottom="${hwpUnit(padB)}"/>`,
         )
         rowXml[rowXml.length - 1] += `</hp:tc>`
@@ -746,10 +767,6 @@ class SectionBuilder {
       cellsXml.push(rowXml)
     })
 
-    // 표 전체 너비 = 1행 셀 너비 합
-    const firstRowWidth = Array.from(rows[0]?.children ?? [])
-      .filter((x) => x.tagName === 'TD')
-      .reduce((sum, td) => sum + (ptOf(tdStyle(td as Element, 'width')) ?? 100), 0)
     const defaultBf = this.w.borderFillId(null)
 
     return (
@@ -916,6 +933,13 @@ export function html2hwpx(root: Element, template: Uint8Array, embed?: EmbeddedF
   const container = sections.length ? sections[0] : root
   // v0: 다중 섹션은 첫 섹션의 페이지 설정으로 병합 (섹션별 secPr는 v0.3)
   // 페이지 설정 run 뒤에 머리말·꼬리말 ctrl을 같은(첫) 문단에 얹는다 — 실물 hwpx와 같은 자리
+  // 백분율 폭의 기준 — 구역 본문 가용 폭(용지 폭 - 좌우 여백)
+  const secEl = container as Element
+  const secW = ptOf(tdStyle(secEl, 'width')) ?? 595
+  const pad = (tdStyle(secEl, 'padding') ?? '').split(/\s+/).filter(Boolean)
+  const padAt = (i: number, fb: number) => ptOf(pad[i]) ?? fb
+  builder.availableWidthPt = Math.max(1, secW - padAt(3, padAt(1, 72)) - padAt(1, 72))
+
   const firstRun =
     patchPagePr(setupRun, container as Element) + builder.headerFooterXml(container as Element)
   let body = builder.blockChildrenXml(container, firstRun)

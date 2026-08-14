@@ -168,6 +168,10 @@ numbering 정의(docx `numbering.xml` · odt `text:list-style` · hwpx `hh:numbe
 hwpx의 각주·머리말·꼬리말·쪽번호 매핑도 **실물 한글 문서에서 확정**했다. 전체 쪽수만
 `numType` 값을 못 봐서 강등 상태다(docx·odt로 저장하면 나온다).
 
+**docx·odt는 LibreOffice로 열어 확인했다** — 개요 번호 `1. 가. 나. 2.`, 목록 번호 재시작,
+각주 구분선, 머리말·꼬리말, 쪽번호 `1 / 1`, 셀 테두리·정렬이 전부 뷰어 화면과 같게 나온다.
+hwpx는 아직 한글로 열어보지 못했다(이 기기에 한글이 없다) — 남은 가장 큰 위험이다.
+
 **하이퍼링크는 hwpx에서만 강등된다** — 주소를 버리고 글자만 남긴다. OWPML의
 `fieldBegin type="HYPERLINK"`는 [hwpxlib](https://github.com/neolord0/hwpxlib)의 `FieldType`으로
 확인했지만 `hp:stringParam name="Command"`의 문자열 문법이 미확인이라, 추측해서 쓰면

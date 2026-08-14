@@ -146,8 +146,12 @@ ${
       `<w:abstractNum w:abstractNumId="${outlineId}"><w:multiLevelType w:val="multilevel"/>` +
       OUTLINE_SCHEME.map(
         (lv, i) =>
+          // `w:suff`가 없으면 Word 기본이 **탭**이라 번호와 제목 사이가 다음 탭 정지까지
+          // 벌어진다. 뷰어(`::before`)와 odt는 공백 하나라 셋이 어긋났다.
+          // CT_Lvl은 순서 있는 sequence — suff는 lvlText보다 앞이다.
           `<w:lvl w:ilvl="${i}"><w:start w:val="1"/>` +
           `<w:numFmt w:val="${lv.style === 'hangul' ? 'ganada' : 'decimal'}"/>` +
+          `<w:suff w:val="space"/>` +
           `<w:lvlText w:val="${esc(`${lv.prefix}%${i + 1}${lv.suffix}`)}"/><w:lvlJc w:val="left"/>` +
           `<w:pPr><w:ind w:left="0" w:hanging="0"/></w:pPr></w:lvl>`,
       ).join('') +

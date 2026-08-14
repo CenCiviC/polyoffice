@@ -342,6 +342,10 @@ export function toHex(value: string | null): string | null {
 /** CSS 길이 → pt (기본 단위는 pt) */
 export function toPt(value: string | null): number | null {
   if (!value) return null
+  // 백분율은 기준 길이를 알아야 풀린다 — 여기서 pt로 오해하면 안 된다.
+  // (`width:30%`를 30pt로 읽어 표가 3cm로 쭈그러든 적이 있다. 브라우저는 제대로 그려서
+  //  화면에서는 안 보이고 저장물만 깨졌다.)
+  if (value.includes('%')) return null
   const m = value.match(/(-?[\d.]+)\s*(pt|in|mm|cm|px)?/)
   if (!m) return null
   const n = parseFloat(m[1])
@@ -364,6 +368,14 @@ export function toPt(value: string | null): number | null {
  * 백엔드마다 셀 여백 기본값이 달라서(hwpx 5.1pt / odt 3.6pt / Word 0.08in) 여기서 한 번에 읽어
  * 셋 다 IR 값을 그대로 쓰게 한다. 없으면 0 — 계약에 안 적힌 여백은 넣지 않는다.
  */
+/** 길이 — 백분율이면 기준 길이에 대해 푼다 */
+export function toPtOf(value: string | null, basePt: number): number | null {
+  if (!value) return null
+  const pct = /(-?[\d.]+)\s*%/.exec(value)
+  if (pct) return (parseFloat(pct[1]) / 100) * basePt
+  return toPt(value)
+}
+
 export function readPadding(el: Element | null): [number, number, number, number] {
   const parts = (styleProp(el, 'padding') ?? '')
     .split(/\s+/)
@@ -529,7 +541,7 @@ function readTable(table: Element, ctx: ReadCtx): IrTable {
       cells.push({
         colSpan: Number(td.getAttribute('colspan') ?? 1) || 1,
         rowSpan: Number(td.getAttribute('rowspan') ?? 1) || 1,
-        widthPt: toPt(styleProp(td, 'width')) ?? 0,
+        widthPt: toPtOf(styleProp(td, 'width'), ctx.availableWidthPt) ?? 0,
         heightPt: toPt(styleProp(td, 'height')) ?? 0,
         paddingPt: readPadding(td),
         background: toHex(styleProp(td, 'background') ?? styleProp(td, 'background-color')),
@@ -558,7 +570,13 @@ function readTable(table: Element, ctx: ReadCtx): IrTable {
       c += cell.colSpan
     }
   })
-  return { rows, colWidthsPt: colWidthsPt.map((w) => w || 60) }
+  // 폭을 안 준 열은 표의 남은 폭을 나눠 갖는다. 예전에는 60pt로 못 박아서
+  // `<table style="width:100%">`에 셀 폭을 안 쓴 흔한 문서가 아주 좁은 표로 나갔다.
+  const tableWidthPt = toPtOf(styleProp(table, 'width'), ctx.availableWidthPt) ?? ctx.availableWidthPt
+  const known = colWidthsPt.reduce((sum, w) => sum + (w || 0), 0)
+  const blanks = colWidthsPt.filter((w) => !w).length
+  const each = blanks ? Math.max(0, tableWidthPt - known) / blanks : 0
+  return { rows, colWidthsPt: colWidthsPt.map((w) => w || each || 60) }
 }
 
 /** 문서를 훑는 동안 이어지는 상태 — 지금은 목록 인스턴스 번호뿐 */
@@ -566,6 +584,8 @@ interface ReadCtx {
   lists: IrListDef[]
   nextListId: number
   footnotes: IrFootnote[]
+  /** 구역의 본문 가용 폭(pt) — 표·셀의 백분율 폭을 푸는 기준 */
+  availableWidthPt: number
 }
 
 /**
@@ -653,14 +673,17 @@ function hfBlocks(sec: Element, tag: 'doc-header' | 'doc-footer', ctx: ReadCtx):
 export function readIr(root: Element): IrDoc {
   const sections = Array.from(root.querySelectorAll('doc-section'))
   const targets = sections.length ? sections : [root]
-  const ctx: ReadCtx = { lists: [], nextListId: 1, footnotes: [] }
+  const ctx: ReadCtx = { lists: [], nextListId: 1, footnotes: [], availableWidthPt: 451 }
   // 구역을 먼저 다 훑어야 ctx.lists가 채워진다 — 목록 정의는 문서 전역이라 순서가 중요하다
   const sectionsOut = targets.map((sec) => {
     // doc-section의 style에서 페이지 크기·여백을 되읽는다 (없으면 A4 세로)
     const pad = (styleProp(sec, 'padding') ?? '').split(/\s+/)
     const padPt = (i: number, fallback: number) => toPt(pad[i] ?? null) ?? fallback
+    // 표·셀의 백분율 폭은 이 구역의 본문 폭을 기준으로 푼다
+    const secWidth = toPt(styleProp(sec, 'width')) ?? 595
+    ctx.availableWidthPt = Math.max(1, secWidth - padPt(3, padPt(1, 72)) - padPt(1, 72))
     return {
-      widthPt: toPt(styleProp(sec, 'width')) ?? 595,
+      widthPt: secWidth,
       heightPt: toPt(styleProp(sec, 'min-height') ?? styleProp(sec, 'height')) ?? 842,
       padTopPt: padPt(0, 72),
       padRightPt: padPt(1, 72),

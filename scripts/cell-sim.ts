@@ -11,7 +11,7 @@ import { Window } from 'happy-dom'
 import { unzipSync, strFromU8 } from 'fflate'
 
 import { IR_VERSION, normalizeIR, validateIR } from '../src/lib/ir'
-import { CELL_BORDER, CELL_VALIGN, parseBorder, readIr } from '../src/lib/ir-model'
+import { CELL_BORDER, CELL_VALIGN, parseBorder, readIr, toPt } from '../src/lib/ir-model'
 import { BASE_CSS } from '../src/lib/narro'
 import { html2hwpx } from '../src/lib/html2hwpx'
 import { html2docx } from '../src/lib/html2docx'
@@ -87,8 +87,10 @@ normalizeIR(root)
 
 // ── 3. 뷰어 CSS — 기본값과 같은가 ───────────────────────────────────
 {
-  const want = `table.hwp-table td { border: ${CELL_BORDER.widthPt}pt ${CELL_BORDER.style} ${CELL_BORDER.color}; vertical-align: ${CELL_VALIGN}; }`
+  const want = `.hwp-page table td { border: ${CELL_BORDER.widthPt}pt ${CELL_BORDER.style} ${CELL_BORDER.color}; vertical-align: ${CELL_VALIGN}; }`
   check('뷰어 td 규칙이 기본 상수에서 나온다', BASE_CSS.includes(want), want)
+  // 손으로 쓴 IR의 표에는 hwp-table 클래스가 없다 — 클래스에 기대면 화면에만 테두리가 없다
+  check('표 규칙이 클래스에 기대지 않는다', !BASE_CSS.includes('table.hwp-table'))
 }
 
 // ── 4. docx ─────────────────────────────────────────────────────────
@@ -134,6 +136,40 @@ normalizeIR(root)
   const valigns = [...section.matchAll(/<hp:subList [^>]*vertAlign="(\w+)"/g)].map((m) => m[1])
   check('subList vertAlign CENTER·TOP·BOTTOM', valigns.join(' ') === 'CENTER TOP BOTTOM CENTER', valigns.join(' '))
   check('셀 글자는 살아 있다', ['기본', '굵은 빨강 파선', '테두리 없음', '배경만'].every((t) => section.includes(t)))
+}
+
+// ── 7. 백분율 폭 ────────────────────────────────────────────────────
+// 브라우저는 %를 제대로 그리는데 우리는 `30%`를 30pt로 읽어 표가 3cm로 쭈그러들었다.
+// 화면에서는 멀쩡해 보여서 LibreOffice로 열어 보고서야 드러난 종류의 버그다.
+{
+  check('toPt는 백분율을 pt로 오해하지 않는다', toPt('30%') === null, String(toPt('30%')))
+
+  // A4 세로 · 좌우 1in 여백 → 본문 가용 폭 451.2pt
+  const pct = docOf(
+    `<doc-section data-ir="${IR_VERSION}" style="width:8.268in;min-height:11.693in;padding:1in 1in 1in 1in">` +
+      `<table style="width:100%"><tr><td style="width:30%">좁게</td><td>나머지</td></tr></table>` +
+      `</doc-section>`,
+  )
+  normalizeIR(pct)
+  const cols = readIr(pct).sections[0].blocks.flatMap((b) => (b.kind === 'table' ? [b.table.colWidthsPt] : []))[0]
+  const avail = 8.268 * 72 - 144
+  check('30%가 본문 가용 폭 기준으로 풀린다', Math.abs(cols[0] - avail * 0.3) < 1, `${cols[0].toFixed(1)}pt`)
+  check('폭을 안 준 열이 남은 폭을 갖는다', Math.abs(cols[1] - avail * 0.7) < 1, `${cols[1].toFixed(1)}pt`)
+  check('표가 본문 폭을 채운다', Math.abs(cols[0] + cols[1] - avail) < 1, `${(cols[0] + cols[1]).toFixed(1)}pt`)
+
+  // 셀 폭을 하나도 안 준 흔한 문서 — 예전에는 열마다 60pt(docx)·100pt(hwpx)로 못 박혔다
+  const bare = docOf(
+    `<doc-section data-ir="${IR_VERSION}" style="width:8.268in;min-height:11.693in;padding:1in 1in 1in 1in">` +
+      `<table style="width:100%"><tr><td>가</td><td>나</td><td>다</td></tr></table></doc-section>`,
+  )
+  normalizeIR(bare)
+  const even = readIr(bare).sections[0].blocks.flatMap((b) => (b.kind === 'table' ? [b.table.colWidthsPt] : []))[0]
+  check('폭이 하나도 없으면 균등 분배', even.every((w) => Math.abs(w - avail / 3) < 1), even.map((w) => w.toFixed(0)).join('/'))
+
+  // hwpx도 같은 기준을 써야 한다 (자체 순회라 규칙이 갈라지기 쉽다)
+  const section = strFromU8(unzipSync(html2hwpx(bare, template).data)['Contents/section0.xml'])
+  const tblW = Number(/<hp:sz width="(\d+)"/.exec(section)?.[1] ?? 0) / 100
+  check('hwpx 표 폭도 본문 폭을 채운다', Math.abs(tblW - avail) < 3, `${tblW.toFixed(1)}pt`)
 }
 
 console.log(ok ? '\n✓ 표 셀 테두리·세로 정렬 검증 통과' : '\n✗ 실패')

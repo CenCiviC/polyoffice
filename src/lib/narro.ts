@@ -49,9 +49,12 @@ const BASE_CSS = `
   .hwp-page p { margin: 0; min-height: 1em; white-space: pre-wrap; word-break: keep-all; line-break: strict; overflow-wrap: break-word; font-kerning: none; line-height: 1.6; }
   /* 빈 문단은 한 줄 높이를 차지한다 (백엔드의 빈 문단과 같은 16pt) */
   .hwp-page p:empty { min-height: 1.6em; }
-  table.hwp-table { border-collapse: collapse; margin: 2pt 0; }
+  /* 클래스에 기대지 않는다 — hwp-table은 리더와 편집기가 붙이는 것이라
+     손으로(또는 LLM이) 쓴 IR의 표에는 없다. 그러면 화면에만 테두리가 없어서
+     저장물과 어긋난다(백엔드는 IR에 값이 없으면 CELL_BORDER를 쓴다). */
+  .hwp-page table { border-collapse: collapse; margin: 2pt 0; }
   /* 셀 기본 테두리·세로 정렬 — 백엔드 셋이 IR에 값이 없을 때 쓰는 것과 같은 상수에서 나온다 */
-  table.hwp-table td { border: ${CELL_BORDER.widthPt}pt ${CELL_BORDER.style} ${CELL_BORDER.color}; vertical-align: ${CELL_VALIGN}; }
+  .hwp-page table td { border: ${CELL_BORDER.widthPt}pt ${CELL_BORDER.style} ${CELL_BORDER.color}; vertical-align: ${CELL_VALIGN}; }
   .hwp-page img { max-width: 100%; }
   .hwp-page h1, .hwp-page h2, .hwp-page h3, .hwp-page h4, .hwp-page h5, .hwp-page h6 { margin: 4pt 0 2pt; line-height: 1.4; }
   .hwp-page h1 { font-size: 16pt; } .hwp-page h2 { font-size: 14pt; } .hwp-page h3 { font-size: 13pt; }
@@ -281,6 +284,9 @@ class Emitter {
 
 /** IR body → 완전한 standalone HTML 문서 (다운로드/미리보기 공용) */
 export function wrapStandalone(body: string): string {
+  // 전체 쪽수는 조판만 아는 값인데(편집기의 paginate가 --pages에 채운다) 정적 미리보기에는
+  // 조판이 없다. 여기서는 구역 수가 곧 쪽수라 그대로 박아 준다 — 안 그러면 `?`가 남는다.
+  const pages = (body.match(/<doc-section[\s>]/g) ?? []).length || 1
   return `<!doctype html>
 <html lang="ko">
 <head>
@@ -289,7 +295,7 @@ export function wrapStandalone(body: string): string {
 <title>HWP 변환 문서</title>
 <style>${BASE_CSS}</style>
 </head>
-<body>${body}</body>
+<body style="--pages:'${pages}'">${body}</body>
 </html>`
 }
 
