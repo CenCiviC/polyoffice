@@ -18,15 +18,19 @@
     "preview": "vite preview",
     "matrix": "bun run scripts/matrix.ts",
     "vocab-sim": "bun run scripts/vocab-sim.ts",
-    "shots": "bun run scripts/shots.ts"
+    "shots": "bun run scripts/shots.ts",
+    "mcp": "bun run mcp/server.ts",
+    "mcp-sim": "bun run scripts/mcp-sim.ts"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "cfb": "^1.2.2",
     "fflate": "^0.8.3",
     "hwp.js": "^0.0.3",
     "pako": "^3.0.1",
     "react": "^19.2.8",
-    "react-dom": "^19.2.8"
+    "react-dom": "^19.2.8",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",
