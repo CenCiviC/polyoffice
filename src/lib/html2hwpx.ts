@@ -371,6 +371,10 @@ class HwpxWriter {
     }
     return this.outlineNum
   }
+  /** 개요 문단이 하나라도 있었으면 그 numbering id, 없으면 null (구역 설정 갱신용) */
+  registeredOutlineId(): number | null {
+    return this.outlineNum
+  }
 
   borderFillId(fillHex: string | null, border: IrBorder | null = CELL_BORDER): number {
     const key = `${fillHex ?? 'none'}|${border ? `${border.widthPt}:${border.style}:${border.color}` : 'none'}`
@@ -510,25 +514,120 @@ function paddingOf(el: Element): [number, number, number, number] {
   return [top, right, bottom, left]
 }
 
+const HF_BAND_MAX_PT = 36
+
+/** 조판이 페이지마다 복제한 사본(`data-pg`)은 세지 않는다 — headerFooterXml과 같은 규칙 */
+function hasHeadFoot(sec: Element, tag: 'DOC-HEADER' | 'DOC-FOOTER'): boolean {
+  return Array.from(sec.children).some((c) => c.tagName === tag && !c.hasAttribute('data-pg'))
+}
+
 /**
  * 템플릿 secPr의 페이지 설정을 IR doc-section 값으로 교체한다.
  * 이걸 안 하면 hwpx만 템플릿 고정값(위 0.59in + 머리말 0.59in …)을 써서
- * 같은 IR인데 docx/odt와 본문 영역이 달라진다. 머리말/꼬리말은 아직 안 만들므로
- * 0으로 두고 그만큼을 위/아래 여백에 그대로 준다.
+ * 같은 IR인데 docx/odt와 본문 영역이 달라진다.
+ *
+ * 한글에서 본문이 시작하는 자리는 `top + header`다(docx의 `w:top`이 이미 본문 자리인 것과 다르다).
+ * 그래서 머리말·꼬리말이 있으면 여백을 **쪼개** 준다 — 안 그러면 머리말이 본문 위에 겹쳐 그려진다.
+ * 쪼개는 몫은 docx가 쓰는 값(`w:header="720"` = 0.5in)과 같아지도록 여백의 절반(최대 36pt).
  */
-function patchPagePr(run: string, section: Element): string {
+function patchPagePr(run: string, section: Element, hasHeader: boolean, hasFooter: boolean): string {
   const w = ptOf(tdStyle(section, 'width'))
   const h = ptOf(tdStyle(section, 'min-height') ?? tdStyle(section, 'height'))
   if (!w || !h) return run
   const [top, right, bottom, left] = tdStyle(section, 'padding') ? paddingOf(section) : [72, 72, 72, 72]
+  const band = (has: boolean, pad: number) => (has ? Math.min(HF_BAND_MAX_PT, pad / 2) : 0)
+  const headerBand = band(hasHeader, top)
+  const footerBand = band(hasFooter, bottom)
   return run
     .replace(/(<hp:pagePr[^>]*\bwidth=")\d+(")/, `$1${hwpUnit(w)}$2`)
     .replace(/(<hp:pagePr[^>]*\bheight=")\d+(")/, `$1${hwpUnit(h)}$2`)
     .replace(
       /<hp:margin\b[^>]*\/>/,
-      `<hp:margin header="0" footer="0" gutter="0" left="${hwpUnit(left)}" ` +
-        `right="${hwpUnit(right)}" top="${hwpUnit(top)}" bottom="${hwpUnit(bottom)}"/>`,
+      `<hp:margin header="${hwpUnit(headerBand)}" footer="${hwpUnit(footerBand)}" gutter="0" left="${hwpUnit(left)}" ` +
+        `right="${hwpUnit(right)}" top="${hwpUnit(top - headerBand)}" bottom="${hwpUnit(bottom - footerBand)}"/>`,
     )
+}
+
+/**
+ * 구역이 쓸 개요 번호 모양을 우리가 등록한 numbering으로 바꾼다.
+ *
+ * 문단마다 `hh:heading type="OUTLINE" idRef`를 붙이는 것만으로는 부족하다 —
+ * 한글은 **구역의 `secPr/@outlineShapeIDRef`가 가리키는 정의**로 개요 번호를 그린다.
+ * 템플릿 기본값(1)은 수준 1~7의 서식 문자열이 비어 있어서, 이걸 안 바꾸면
+ * 개요 문단이 번호 없이 나온다(한글에서 실제로 확인).
+ */
+function patchOutlineShape(sectionBody: string, outlineId: number | null): string {
+  if (outlineId === null) return sectionBody
+  return sectionBody.replace(
+    /(<hp:secPr\b[^>]*\boutlineShapeIDRef=")\d+(")/,
+    `$1${outlineId}$2`,
+  )
+}
+
+/** 뷰어 CSS와 같은 줄간격 — 어림한 높이가 화면과 크게 어긋나지 않게 한다 */
+const LINE_FACTOR = 1.6
+/** 한글·한자·전각은 한 칸, 그 밖(라틴·숫자·공백)은 대략 절반 칸으로 센다 */
+function textWidthPt(text: string, sizePt: number): number {
+  let cols = 0
+  for (const ch of text) cols += /[ᄀ-ᇿ⺀-꓏가-힣豈-﫿＀-｠]/.test(ch) ? 1 : 0.55
+  return cols * sizePt
+}
+
+/** 문단 하나의 글자 크기 — 가장 큰 run을 따른다(줄 높이를 정하는 건 큰 글자다) */
+function paraSizePt(el: Element): number {
+  const spans = Array.from(el.querySelectorAll('span'))
+  const sizes = spans.map((s) => ptOf(tdStyle(s, 'font-size')) ?? 0).filter(Boolean)
+  return sizes.length ? Math.max(...sizes) : 10
+}
+
+/**
+ * 셀 내용이 차지할 높이(pt)를 어림한다. 정확한 조판이 아니라 **모자라지 않을 값**이 목적이다 —
+ * 모자라면 한글에서 글자가 아래 행을 덮고, 남으면 행이 조금 길어질 뿐이다.
+ */
+function cellTextHeightPt(td: Element, innerWidthPt: number): number {
+  const blocks = Array.from(td.querySelectorAll('p, h1, h2, h3, h4, h5, h6, li')).filter(
+    (b) => b.closest('td') === td,
+  )
+  const paras = blocks.length ? blocks : [td]
+  let h = 0
+  for (const p of paras) {
+    const size = paraSizePt(p)
+    const text = (p.textContent ?? '').trim()
+    const lines = Math.max(1, Math.ceil(textWidthPt(text, size) / innerWidthPt))
+    h += lines * size * LINE_FACTOR
+  }
+  return h
+}
+
+/**
+ * 행마다 높이(pt). 한글은 저장된 높이를 그대로 쓰므로(실물 hwpx도 조판된 높이를 적어 둔다)
+ * IR이 높이를 안 준 셀에 한 줄 높이를 박아 두면 여러 줄 셀이 아래 행을 덮어쓴다.
+ */
+function rowHeightsPt(rows: Element[], colWidthAt: (c: number, span: number) => number): number[] {
+  const MIN_ROW_PT = 15
+  const heights = rows.map(() => MIN_ROW_PT)
+  const occupied = new Map<string, boolean>()
+  rows.forEach((tr, r) => {
+    let c = 0
+    for (const td of Array.from(tr.children).filter((x) => x.tagName === 'TD')) {
+      while (occupied.get(`${r},${c}`)) c++
+      const colSpan = Number(td.getAttribute('colspan') ?? 1)
+      const rowSpan = Number(td.getAttribute('rowspan') ?? 1)
+      for (let rr = r; rr < r + rowSpan; rr++)
+        for (let cc = c; cc < c + colSpan; cc++) occupied.set(`${rr},${cc}`, true)
+
+      const [padT, padR, padB, padL] = paddingOf(td)
+      const declared = ptOf(tdStyle(td, 'height'))
+      const inner = Math.max(1, colWidthAt(c, colSpan) - padL - padR)
+      const need = declared ?? cellTextHeightPt(td, inner) + padT + padB
+      // 세로 병합 셀은 걸친 행들이 나눠 진다
+      const share = need / rowSpan
+      for (let rr = r; rr < r + rowSpan && rr < rows.length; rr++)
+        heights[rr] = Math.max(heights[rr], share)
+      c += colSpan
+    }
+  })
+  return heights.map((h) => Math.max(MIN_ROW_PT, Math.round(h * 10) / 10))
 }
 
 function tdStyle(el: Element, prop: string): string | null {
@@ -724,11 +823,36 @@ class SectionBuilder {
     // 표 전체 너비. 셀 폭을 안 준 문서가 흔해서(`<table style="width:100%">`) 그때는
     // 남은 폭을 균등 분배한다 — 예전에는 셀마다 100pt로 못 박아 좁은 표가 나갔다.
     const firstRow = Array.from(rows[0]?.children ?? []).filter((x) => x.tagName === 'TD')
-    const declared = firstRow.map((td) => ptOfBase(tdStyle(td as Element, 'width'), this.availableWidthPt) ?? 0)
     const tableWidth = ptOfBase(tdStyle(table, 'width'), this.availableWidthPt) ?? this.availableWidthPt
-    const blanks = declared.filter((w) => !w).length
-    const evenWidth = blanks ? Math.max(0, tableWidth - declared.reduce((a, b) => a + b, 0)) / blanks : 0
-    const firstRowWidth = declared.reduce((sum, w) => sum + (w || evenWidth || 100), 0)
+
+    // 폭은 **열**의 성질이다. HTML은 첫 행에만 폭을 적는 게 흔한데(그 아래 행은 열을 따라간다),
+    // 예전에는 폭이 없는 셀을 전부 100pt로 못 박아 행마다 폭이 다른 표가 한글로 나갔다.
+    const colWidths: number[] = []
+    {
+      let c = 0
+      for (const td of firstRow) {
+        const span = Number((td as Element).getAttribute('colspan') ?? 1)
+        const w = ptOfBase(tdStyle(td as Element, 'width'), this.availableWidthPt) ?? 0
+        for (let i = 0; i < span; i++) colWidths[c + i] = w ? w / span : 0
+        c += span
+      }
+      const blanks = colWidths.filter((w) => !w).length
+      const even = blanks
+        ? Math.max(0, tableWidth - colWidths.reduce((a, b) => a + b, 0)) / blanks
+        : 0
+      for (let i = 0; i < colWidths.length; i++) colWidths[i] = colWidths[i] || even || 100
+    }
+    const colWidthAt = (c: number, span: number) => {
+      let sum = 0
+      for (let i = 0; i < span; i++) sum += colWidths[c + i] ?? colWidths[colWidths.length - 1] ?? 100
+      return sum
+    }
+    const firstRowWidth = colWidths.reduce((a, b) => a + b, 0)
+
+    // 행 높이. 한글은 저장된 높이를 그대로 쓰므로(실물 hwpx도 조판된 높이를 적어 둔다)
+    // 안 적힌 셀에 한 줄 높이를 박아 두면 여러 줄 셀이 아래 행을 덮어쓴다.
+    // 그래서 IR이 높이를 안 주면 내용에서 어림한다 — 넉넉한 쪽으로 틀리는 게 안전하다.
+    const rowHeights = rowHeightsPt(rows, colWidthAt)
 
     rows.forEach((tr, r) => {
       const rowXml: string[] = []
@@ -740,8 +864,10 @@ class SectionBuilder {
         for (let rr = r; rr < r + rowSpan; rr++)
           for (let cc = c; cc < c + colSpan; cc++) occupied.set(`${rr},${cc}`, true)
 
-        const wPt = ptOfBase(tdStyle(td, 'width'), this.availableWidthPt) ?? 0
-        const hPt = ptOf(tdStyle(td, 'height')) ?? 15
+        const wPt = ptOfBase(tdStyle(td, 'width'), this.availableWidthPt) || colWidthAt(c, colSpan)
+        const hPt =
+          ptOf(tdStyle(td, 'height')) ??
+          rowHeights.slice(r, r + rowSpan).reduce((a, b) => a + b, 0)
         const bg = tdStyle(td, 'background')
         const rawBorder = tdStyle(td, 'border')
         const bfId = this.w.borderFillId(
@@ -753,11 +879,14 @@ class SectionBuilder {
 
         const inner = this.blockChildrenXml(td)
         rowXml.push(
-          `<hp:tc name="" header="0" hasMargin="0" protect="0" editable="0" dirty="0" borderFillIDRef="${bfId}">` +
+          // hasMargin="1" — 아래 hp:cellMargin(=IR의 td padding)을 쓰겠다는 뜻. 0이면 한글이
+          // 셀 여백을 무시하고 표 기본값(hp:inMargin)을 써서 글자가 테두리에 붙는다.
+          // (실물 한글 문서는 표 전체가 같은 여백이라 0 + inMargin으로 적는다 — 우리는 셀마다 다르다)
+          `<hp:tc name="" header="0" hasMargin="1" protect="0" editable="0" dirty="0" borderFillIDRef="${bfId}">` +
             `<hp:subList id="${this.w.nextObjId()}" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="${HWPX_VALIGN[vAlign] ?? 'CENTER'}" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">${inner}</hp:subList>` +
             `<hp:cellAddr colAddr="${c}" rowAddr="${r}"/>` +
             `<hp:cellSpan colSpan="${colSpan}" rowSpan="${rowSpan}"/>` +
-            `<hp:cellSz width="${Math.round((wPt || evenWidth || 100) * 100)}" height="${Math.round(hPt * 100)}"/>` +
+            `<hp:cellSz width="${Math.round(wPt * 100)}" height="${Math.round(hPt * 100)}"/>` +
             `<hp:cellMargin left="${hwpUnit(padL)}" right="${hwpUnit(padR)}" top="${hwpUnit(padT)}" bottom="${hwpUnit(padB)}"/>`,
         )
         rowXml[rowXml.length - 1] += `</hp:tc>`
@@ -941,11 +1070,18 @@ export function html2hwpx(root: Element, template: Uint8Array, embed?: EmbeddedF
   builder.availableWidthPt = Math.max(1, secW - padAt(3, padAt(1, 72)) - padAt(1, 72))
 
   const firstRun =
-    patchPagePr(setupRun, container as Element) + builder.headerFooterXml(container as Element)
+    patchPagePr(
+      setupRun,
+      container as Element,
+      hasHeadFoot(container as Element, 'DOC-HEADER'),
+      hasHeadFoot(container as Element, 'DOC-FOOTER'),
+    ) + builder.headerFooterXml(container as Element)
   let body = builder.blockChildrenXml(container, firstRun)
   for (const extra of sections.slice(1)) {
     body += builder.blockChildrenXml(extra)
   }
+  // 개요 numbering은 블록을 훑는 동안 등록되므로 secPr 갱신은 본문을 다 만든 뒤에 한다.
+  body = patchOutlineShape(body, writer.registeredOutlineId())
 
   // 글꼴 임베딩 — OWPML의 hh:font isEmbedded/binaryItemIDRef 규격.
   // 한글이 실제로 읽어주는지는 이 기기에 한글이 없어 검증하지 못했다.

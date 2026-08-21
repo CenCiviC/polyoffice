@@ -151,6 +151,21 @@ normalizeIR(root)
   // 전체 쪽수는 numType 값을 실물로 못 봐서 쓰지 않는다 (강등)
   check('전체 쪽수는 강등 — 추측한 numType을 쓰지 않는다', !section.includes('TOTAL_PAGE'))
   check('머리말이 본문 문단으로 새지 않는다', (section.match(/2026년 사업 계획/g) ?? []).length === 1)
+
+  // 한글은 본문을 `top + header`에서 시작한다. 여백을 안 쪼개면 머리말이 본문 위에 겹쳐 그려진다
+  // (한글 2018에서 표가 둘째 쪽으로 넘어갈 때 실제로 겹치는 걸 봤다).
+  const m = /<hp:margin header="(\d+)" footer="(\d+)"[^>]*top="(\d+)" bottom="(\d+)"/.exec(section)
+  const [hdr, ftr, top, bot] = (m ?? []).slice(1).map(Number)
+  check('머리말·꼬리말 몫이 여백에서 떼어진다', hdr === 3600 && ftr === 3600, `header=${hdr} footer=${ftr}`)
+  check('본문 시작 자리는 그대로 1in', top + hdr === 7200 && bot + ftr === 7200, `top=${top} bottom=${bot}`)
+
+  // 머리말·꼬리말이 없는 문서는 예전처럼 여백을 통째로 본문에 준다
+  const bare = docOf(
+    `<doc-section data-ir="${IR_VERSION}" style="width:8.268in;min-height:11.693in;padding:1in 1in 1in 1in">` +
+      `<p data-id="b1">본문만</p></doc-section>`,
+  )
+  const bareSec = strFromU8(unzipSync(html2hwpx(bare, template).data)['Contents/section0.xml'])
+  check('머리말이 없으면 여백을 안 쪼갠다', /<hp:margin header="0" footer="0"[^>]*top="7200" bottom="7200"/.test(bareSec))
 }
 
 console.log(ok ? '\n✓ 머리말·꼬리말·쪽번호 검증 통과' : '\n✗ 실패')

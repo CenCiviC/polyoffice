@@ -119,6 +119,24 @@ normalizeIR(root)
   check('paraPr가 OUTLINE 수준 0·1로 묶인다', heads.sort().join('') === '01', heads.join(''))
   check('본문에 번호 텍스트가 없다', !/<hp:t>\s*(\d+\.|[가-힣]\.)\s*<\/hp:t>/.test(section))
   check('제목 글자는 살아 있다', ['첫째 장', '둘째 절', '번호 없는 제목'].every((t) => section.includes(t)))
+
+  // 문단 바인딩만으로는 한글에 번호가 안 나온다 — 구역이 가리키는 개요 모양을 바꿔야 한다.
+  // (한글 2018 실기기에서 확인: 템플릿 기본값 1은 수준 1~7 서식이 비어 있어 번호가 안 그려진다)
+  const outlineDef = header.match(/<hh:numbering id="(\d+)"(?:(?!<\/hh:numbering>)[\s\S])*?>\^1\.</)
+  const secShape = section.match(/<hp:secPr\b[^>]*\boutlineShapeIDRef="(\d+)"/)
+  check(
+    'secPr가 우리 개요 numbering을 가리킨다',
+    !!outlineDef && !!secShape && outlineDef[1] === secShape[1],
+    `numbering=${outlineDef?.[1]} secPr=${secShape?.[1]}`,
+  )
+
+  // 개요를 안 쓴 문서까지 건드리면 템플릿 기본 개요 모양이 날아간다
+  const plain = docOf(`<doc-section data-ir="${IR_VERSION}"><h1 data-id="b1">번호 없음</h1></doc-section>`)
+  normalizeIR(plain)
+  const plainSec = strFromU8(unzipSync(html2hwpx(plain, template).data)['Contents/section0.xml'])
+  const tmplSec = strFromU8(unzipSync(template)['Contents/section0.xml'])
+  const shapeOf = (s: string) => s.match(/<hp:secPr\b[^>]*\boutlineShapeIDRef="(\d+)"/)?.[1]
+  check('개요가 없으면 구역 설정을 안 건드린다', shapeOf(plainSec) === shapeOf(tmplSec), `${shapeOf(plainSec)} vs 템플릿 ${shapeOf(tmplSec)}`)
 }
 
 console.log(ok ? '\n✓ 개요 번호 검증 통과' : '\n✗ 실패')

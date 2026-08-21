@@ -170,6 +170,29 @@ normalizeIR(root)
   const section = strFromU8(unzipSync(html2hwpx(bare, template).data)['Contents/section0.xml'])
   const tblW = Number(/<hp:sz width="(\d+)"/.exec(section)?.[1] ?? 0) / 100
   check('hwpx 표 폭도 본문 폭을 채운다', Math.abs(tblW - avail) < 3, `${tblW.toFixed(1)}pt`)
+
+  // 폭은 열의 성질이다. HTML은 첫 행에만 폭을 적는 게 흔한데, 예전에는 그 아래 행이
+  // 전부 100pt로 굳어 한글에서 행마다 폭이 다른 표가 나왔다.
+  // 높이도 마찬가지 — 안 적힌 셀을 한 줄(15pt)로 박아 두면 여러 줄 셀이 아래 행을 덮는다.
+  const headOnly = docOf(
+    `<doc-section data-ir="${IR_VERSION}" style="width:8.268in;min-height:11.693in;padding:1in 1in 1in 1in">` +
+      `<table style="width:100%">` +
+      `<tr><td style="width:30%;padding:6pt">개정 전</td><td style="width:70%;padding:6pt">개정 후</td></tr>` +
+      `<tr><td style="padding:6pt">짧게</td><td style="padding:6pt">${'긴 문장이 여러 줄로 접히도록 충분히 길게 씁니다. '.repeat(4)}</td></tr>` +
+      `</table></doc-section>`,
+  )
+  normalizeIR(headOnly)
+  const hx = strFromU8(unzipSync(html2hwpx(headOnly, template).data)['Contents/section0.xml'])
+  const sz = [...hx.matchAll(/<hp:cellSz width="(\d+)" height="(\d+)"\/>/g)].map((m) => [
+    Number(m[1]) / 100,
+    Number(m[2]) / 100,
+  ])
+  check('둘째 행이 첫 행의 열 폭을 따른다', sz.length === 4 && sz[0][0] === sz[2][0] && sz[1][0] === sz[3][0], sz.map((s) => s[0].toFixed(0)).join('/'))
+  check('여러 줄 셀이 한 줄 높이로 굳지 않는다', (sz[3]?.[1] ?? 0) > 40, `${sz[3]?.[1]}pt`)
+  check('같은 행의 셀은 높이가 같다', sz[2]?.[1] === sz[3]?.[1], `${sz[2]?.[1]} vs ${sz[3]?.[1]}`)
+  // hasMargin="0"이면 한글이 hp:cellMargin을 무시하고 표 기본 여백을 써서 글자가 테두리에 붙는다
+  check('셀이 자기 여백을 쓴다고 표시한다', !/<hp:tc [^>]*hasMargin="0"/.test(hx) && /<hp:tc [^>]*hasMargin="1"/.test(hx))
+  check('셀 여백이 td padding 그대로', hx.includes('<hp:cellMargin left="600" right="600" top="600" bottom="600"/>'))
 }
 
 console.log(ok ? '\n✓ 표 셀 테두리·세로 정렬 검증 통과' : '\n✗ 실패')

@@ -168,7 +168,8 @@ hwp 가져오기 ─┼─→ canonical IR(HTML) ─┼─→ docx (OOXML)
 - **v0.1**: READ 어휘(문단·런·표·구역) + 린터. hwp→IR이 린터 통과. ✅
 - **v0.1.x**: WRITE 백엔드 hwpx — 템플릿+주입(blank.hwpx, MIT/pypandoc-hwpx),
   hwp→IR→hwpx 왕복 E2E(`bun run tohwpx`) 통과. 이후 docx·odt 백엔드와 `img` READ/WRITE,
-  font-family 매핑까지. ✅ (한글·한컴독스 실기기 열기 검증은 아직)
+  font-family 매핑까지. ✅ (한글 2018 실기기 열기 확인 완료 — 색·글자 배경은 그 버전의
+  hwpx 렌더링이 망가져 있어 판정 보류, [TODO.md](TODO.md))
 - **v0.2.0 (현재)**: 인라인 어휘 `a[href]`·`sup`/`sub`, 문단 여백 어휘 4종
   (`margin-left`·`text-indent`·`margin-top`·`margin-bottom`). 셋 다 편집기 UI + 쓰기 3종.
   **읽기**: 다섯 리더가 첨자·문단 여백을 채운다. 하이퍼링크는 docx·odt·hwpx만
