@@ -2,11 +2,12 @@
 // 같은 파일을 Rust(WASM) 파서와 hwp.js 파서로 각각 파싱해
 // 동일한 IR HTML이 나오는지 검사한다. Rust 파서의 회귀 테스트.
 import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { convertModel } from '../src/lib/narro'
 import { parseHwpJs } from '../src/lib/parser-js'
 import { initHwpWasm, parseHwpWasm } from '../src/lib/parser-wasm'
 
-const input = process.argv[2] ?? '/Users/deargen/Downloads/BlogForm_BookReview.hwp'
+const input = process.argv[2] ?? fileURLToPath(new URL('../samples/hwp/korean_출판규정.hwp', import.meta.url))
 const data = new Uint8Array(readFileSync(input))
 
 const wasmBytes = new Uint8Array(

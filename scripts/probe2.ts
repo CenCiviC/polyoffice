@@ -1,8 +1,9 @@
 // 표 셀 내부까지 재귀 추출 검증
 import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { parse } from 'hwp.js'
 
-const path = process.argv[2] ?? '/Users/deargen/Downloads/BlogForm_BookReview.hwp'
+const path = process.argv[2] ?? fileURLToPath(new URL('../samples/hwp/korean_출판규정.hwp', import.meta.url))
 const doc = parse(readFileSync(path), { type: 'binary' })
 
 function paraText(para: any): string {

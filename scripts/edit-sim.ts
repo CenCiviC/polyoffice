@@ -2,13 +2,14 @@
 // 변환 → (편집 시뮬레이션: 텍스트 수정 + contentEditable이 만드는 <div> 삽입)
 // → normalizeIR → validateIR 통과 → 편집 반영된 hwpx 생성까지 확인
 import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { Window } from 'happy-dom'
 import { unzipSync, strFromU8 } from 'fflate'
 import { normalizeIR, validateIR } from '../src/lib/ir'
 import { html2hwpx } from '../src/lib/html2hwpx'
 import { convertWithWasm } from './wasm'
 
-const input = process.argv[2] ?? '/Users/deargen/Downloads/BlogForm_BookReview.hwp'
+const input = process.argv[2] ?? fileURLToPath(new URL('../samples/hwp/korean_출판규정.hwp', import.meta.url))
 const { body } = await convertWithWasm(new Uint8Array(readFileSync(input)))
 
 const window = new Window()

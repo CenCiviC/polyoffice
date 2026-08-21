@@ -3,15 +3,16 @@
 //   1) 생성된 XML well-formed 검사 (fast-xml-parser)
 //   2) 텍스트 왕복 검사 — IR의 텍스트가 hwpx <hp:t>에 전부 존재하는지
 import { readFileSync, writeFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { Window } from 'happy-dom'
 import { unzipSync, strFromU8 } from 'fflate'
 import { XMLValidator } from 'fast-xml-parser'
 import { html2hwpx } from '../src/lib/html2hwpx'
 import { convertWithWasm } from './wasm'
 
-const input = process.argv[2] ?? '/Users/deargen/Downloads/BlogForm_BookReview.hwp'
+const input = process.argv[2] ?? fileURLToPath(new URL('../samples/hwp/korean_출판규정.hwp', import.meta.url))
 const output = process.argv[3] ?? input.replace(/\.hwp$/i, '') + '.roundtrip.hwpx'
-const templatePath = new URL('../public/blank.hwpx', import.meta.url).pathname
+const templatePath = new URL('../public/blank.hwpx', import.meta.url)
 
 // 1. hwp → IR (Rust WASM 파서)
 const { body, stats } = await convertWithWasm(new Uint8Array(readFileSync(input)))

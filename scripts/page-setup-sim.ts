@@ -86,7 +86,7 @@ const pgSz = docxXml.match(/<w:pgSz[^>]*\/>/)?.[0] ?? ''
 check('docx pgSz가 가로 A4를 받았다', /w:w="168\d\d"/.test(pgSz), pgSz || '(pgSz 없음)')
 
 // hwpx는 템플릿(blank.hwpx)의 secPr을 이식하므로 바이트가 필요하다
-const template = new Uint8Array(readFileSync(new URL('../public/blank.hwpx', import.meta.url).pathname))
+const template = new Uint8Array(readFileSync(new URL('../public/blank.hwpx', import.meta.url)))
 const hwpxXml = strFromU8(unzipSync(html2hwpx(root, template).data)['Contents/section0.xml'])
 check('hwpx section0.xml 생성', hwpxXml.includes('<hp:p') && hwpxXml.length > 0)
 

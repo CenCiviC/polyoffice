@@ -1,8 +1,9 @@
 // CLI probe: hwp.js가 실제 파일을 파싱할 수 있는지 검증
 import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { parse } from 'hwp.js'
 
-const path = process.argv[2] ?? '/Users/deargen/Downloads/BlogForm_BookReview.hwp'
+const path = process.argv[2] ?? fileURLToPath(new URL('../samples/hwp/korean_출판규정.hwp', import.meta.url))
 const buf = readFileSync(path)
 
 const doc = parse(buf, { type: 'binary' })

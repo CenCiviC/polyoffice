@@ -12,7 +12,7 @@ import { html2hwpx } from '../src/lib/html2hwpx'
 import { html2docx } from '../src/lib/html2docx'
 import { html2odt } from '../src/lib/html2odt'
 
-const template = new Uint8Array(readFileSync(new URL('../public/blank.hwpx', import.meta.url).pathname))
+const template = new Uint8Array(readFileSync(new URL('../public/blank.hwpx', import.meta.url)))
 
 let ok = true
 const check = (label: string, pass: boolean, detail = '') => {

@@ -1,9 +1,10 @@
 // CLI: bun run scripts/convert.ts <input.hwp> [output.html]
 // 브라우저와 동일한 경로(Rust WASM 파서)로 변환한다.
 import { readFileSync, writeFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { convertWithWasm } from './wasm'
 
-const input = process.argv[2] ?? '/Users/deargen/Downloads/BlogForm_BookReview.hwp'
+const input = process.argv[2] ?? fileURLToPath(new URL('../samples/hwp/korean_출판규정.hwp', import.meta.url))
 const output = process.argv[3] ?? 'out.html'
 
 const data = new Uint8Array(readFileSync(input))
