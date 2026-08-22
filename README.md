@@ -85,6 +85,8 @@ bun run cell-sim                    # 표 셀 테두리·세로 정렬 — 셀�
 bun run footnote-sim                # 각주 — 내용 보존 + 번호를 저장하지 않는지 (3종)
 bun run hf-sim                      # 머리말·꼬리말·쪽번호 — 본문 밖 유지 + 조판 사본 걷기
 bun run reread-sim                  # 읽기 대칭 — IR → 파일 → 다시 IR (세 포맷 전수 대조)
+bun run golden-sim                  # 한글이 저장한 골든과 대조 — 색·링크·각주 번호 어휘
+bun run samples-sim                 # samples/ir 전수 — 어떤 문서에나 성립해야 하는 불변식
 bun run mcp                         # MCP 서버 (stdio) — 프롬프트에서 문서 만들기
 bun run mcp-sim                     # MCP 왕복 검증 (도구 5종 + dev 서버 + 편집기 링크)
 bun run shots [문서] [출력]          # 진짜 Chrome에 편집기를 띄워 화면 캡처 (dev 서버 먼저)

@@ -25,6 +25,7 @@
     "hf-sim": "bun run scripts/headerfooter-sim.ts",
     "reread-sim": "bun run scripts/reread-sim.ts",
     "golden-sim": "bun run scripts/golden-sim.ts",
+    "samples-sim": "bun run scripts/samples-sim.ts",
     "shots": "bun run scripts/shots.ts",
     "mcp": "bun run mcp/server.ts",
     "mcp-sim": "bun run scripts/mcp-sim.ts"
