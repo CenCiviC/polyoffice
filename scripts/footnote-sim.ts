@@ -116,7 +116,13 @@ normalizeIR(root)
   const section = strFromU8(unzipSync(html2hwpx(root, template).data)['Contents/section0.xml'])
   const notes = (section.match(/<hp:footNote /g) ?? []).length
   check('hp:footNote 컨트롤 2개', notes === 2, `${notes}개`)
-  check('autoNum으로 번호를 맡긴다', section.includes('<hp:autoNum num="0" numType="FOOTNOTE"/>'))
+  // 번호 run은 subList **안**(각주 첫 문단)에 있어야 한글이 그린다 — 밖에 두면 내용만 나온다.
+  // 한글이 저장한 각주를 그대로 본떴다: samples/hwpx/golden/golden-footnote.hwpx
+  check('autoNum으로 번호를 맡긴다', section.includes('<hp:autoNum num="1" numType="FOOTNOTE">'))
+  check(
+    '번호가 각주 subList 안에 있다',
+    /<hp:footNote [^>]*><hp:subList[^>]*><hp:p[^>]*><hp:run[^>]*><hp:ctrl><hp:autoNum num="1" numType="FOOTNOTE"/.test(section),
+  )
   check('내용이 subList 안에 있다', /<hp:subList[^>]*>[\s\S]*?첫째 각주 내용입니다/.test(section))
   check('본문 문단으로도 새지 않는다', (section.match(/둘째 각주 내용입니다/g) ?? []).length === 1)
 }

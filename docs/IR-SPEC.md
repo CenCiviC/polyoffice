@@ -59,7 +59,7 @@ hwp 가져오기 ─┼─→ canonical IR(HTML) ─┼─→ docx (OOXML)
 | `<img>` | 이미지. 속성: `src`(data-URI) `alt`, style: `width·height`(pt). READ=BinData→base64, WRITE=zip `BinData/imgN.ext`+`hp:pic`. 브라우저 미지원 포맷(wmf/emf)은 자리표시 텍스트 강등 | ✅ RW |
 | `<sup>` `<sub>` | 위첨자·아래첨자. 속성 없음 | ✅ 편집+WRITE |
 | `<doc-field>` | 계산 필드. 속성 `data-kind`(`page`\|`pages`). **머리말·꼬리말 안에만.** 값은 저장하지 않는다 — 화면은 조판이, 파일은 각 포맷의 필드가 센다 | ✅ WRITE |
-| `<a href>` | 하이퍼링크. `http(s):`·`mailto:` 또는 문서 내 앵커 `#b<n>`. `href`와 `data-fn-ref` 동시 지정 금지 | ✅ 편집+WRITE(docx·odt) / hwpx 강등 |
+| `<a href>` | 하이퍼링크. `http(s):`·`mailto:` 또는 문서 내 앵커 `#b<n>`. `href`와 `data-fn-ref` 동시 지정 금지 | ✅ 편집+WRITE(세 포맷) |
 | `<sup><a data-fn-ref="…">` | 각주 참조. `doc-footnote`의 `id`를 가리킴. **`<a>`는 비어 있다** — 번호는 뷰어 counter와 각 포맷의 각주 기능이 센다 | ✅ RW |
 
 ### 블록 주소 체계
@@ -111,6 +111,11 @@ hwp 가져오기 ─┼─→ canonical IR(HTML) ─┼─→ docx (OOXML)
 
 ## 백엔드 매핑 테이블
 
+**hwpx의 색은 `#BBGGRR`다** — `#RRGGBB`가 아니다. 한글이 COLORREF(0x00BBGGRR)를 그대로
+hex로 적기 때문이고, `.hwp` 바이너리와 같은 순서다. docx·odt는 진짜 `#RRGGBB`라 변환은
+hwpx 백엔드 안에만 둔다. '없음'은 `#FFFFFFFF`로 적는다(한글 11+가 쓰는 `none`은 한글 2018이
+검정으로 읽어 본문이 새까맣게 칠해진다). 근거: `samples/hwpx/golden/`.
+
 단위 환산: 1pt = 100 hwpunit(길이) / hwpx 글자 크기 = pt×100 / docx 글자 크기 = pt×2(half-point),
 길이는 twip(pt×20) 또는 EMU.
 
@@ -128,7 +133,7 @@ hwp 가져오기 ─┼─→ canonical IR(HTML) ─┼─→ docx (OOXML)
 | `td` 배경 | borderFill 등록(`<hc:winBrush faceColor>`) + IDRef ● | `<w:shd w:fill>` ● | — |
 | `td` 테두리 | 같은 borderFill의 4변(`<hh:leftBorder type width color>`) — 종류 SOLID·DASH·DOT·DOUBLE_SLIM·NONE과 굵기 mm 값은 실물 hwpx에서 확인 ● | 셀마다 `<w:tcBorders>` (`w:sz`는 1/8pt, 없으면 `w:val="nil"`) ● | 굵기는 한글이 고르는 이산값(0.1·0.12·0.15…mm)으로 스냅 |
 | `td` 세로 정렬 | `<hp:subList vertAlign="TOP\|CENTER\|BOTTOM">` ● | `<w:vAlign>` (middle→center) ● | — |
-| `doc-footnote` | 각주 컨트롤 `<hp:footNote>` + `<hp:autoNum>` (참조 지점에 내용 인라인) ● | `<w:footnoteReference>` + footnotes.xml(구분선 -1·0 포함) ● / odt는 참조 지점의 `<text:note>` ● | — |
+| `doc-footnote` | 각주 컨트롤 `<hp:footNote>` + 번호 `<hp:autoNum numType="FOOTNOTE">`는 **`hp:subList` 안 첫 문단의 run**에 (밖에 두면 한글이 번호를 안 그린다 — 골든에서 확정) ● | `<w:footnoteReference>` + footnotes.xml(구분선 -1·0 포함) ● / odt는 참조 지점의 `<text:note>` ● | — |
 | `doc-textbox` | 글상자 개체 (drawText 계열) ○ | `<wps:txbx><w:txbxContent>` ◐ | float div→인라인 표 1×1 |
 | `doc-eq` | `<hp:equation script>` — **한글 수식 스크립트** (LaTeX→변환기 자작 필요) ○ | `<m:oMath>` (OMML) — MathML→OMML 공식 XSLT 존재 ● | LaTeX 원문 텍스트로 강등 |
 | `doc-pagebreak` | 문단 pageBreak 속성 ◐ | `<w:br w:type="page">` ● | — |
@@ -137,7 +142,7 @@ hwp 가져오기 ─┼─→ canonical IR(HTML) ─┼─→ docx (OOXML)
 | `doc-field pages` | **강등** — 전체 쪽수의 numType을 실물로 못 봤다. 추측해서 쓰지 않는다 | `NUMPAGES` ● / odt `<text:page-count>` ● | hwpx에서는 아무것도 안 나온다 |
 | `img` | `<hp:pic>` + BinData zip 항목 + manifest ◐ | `<w:drawing>` + media/ + rels ● | — |
 | `sup` / `sub` | `<hh:supscript/>` / `<hh:subscript/>` — charPr의 무속성 자식 (실물 샘플 + hwpxlib CharPr 확인) ● | `<w:vertAlign w:val="superscript\|subscript">` ● | — |
-| `a[href]` | `<hp:fieldBegin type="HYPERLINK">`…`<hp:fieldEnd/>` — 타입명은 hwpxlib `FieldType.HYPERLINK`로 확정됐으나 **`hp:stringParam name="Command"`의 문자열 문법이 미확인** ◐ | `<w:hyperlink r:id>` + document.xml.rels 관계 ● | **hwpx는 현재 강등**: 링크 텍스트만 남기고 주소를 버린다(밑줄·파랑 없이 원래 서식 유지). 주소를 지키려면 docx·odt로 저장 |
+| `a[href]` | `<hp:fieldBegin type="HYPERLINK">`…`<hp:fieldEnd/>` + `hp:parameters` 여섯 개(`Command`·`Path`에 주소) — 한글이 저장한 골든에서 확정 ● | `<w:hyperlink r:id>` + document.xml.rels 관계 ● | — |
 | `margin-left` / `text-indent` | paraPr `<hh:margin>`의 `<hc:left>` / `<hc:intent>` (HWPUNIT=pt×100, 실물 확인) ● | `<w:ind w:left>` / 양수 `w:firstLine`·음수 `w:hanging` (twip=pt×20) ● | — |
 | `margin-top` / `margin-bottom` | paraPr `<hh:margin>`의 `<hc:prev>` / `<hc:next>` ● | `<w:spacing w:before>` / `<w:after>` ● | — |
 | `sup>a[data-fn-ref]` | footNote 컨트롤이 참조 겸함 ◐ | footnoteReference가 참조 겸함 ● | 위첨자 숫자로 강등 |
@@ -174,8 +179,7 @@ hwp 가져오기 ─┼─→ canonical IR(HTML) ─┼─→ docx (OOXML)
   (`margin-left`·`text-indent`·`margin-top`·`margin-bottom`). 셋 다 편집기 UI + 쓰기 3종.
   **읽기**: 다섯 리더가 첨자·문단 여백을 채운다. 하이퍼링크는 docx·odt·hwpx만
   (hwp·doc은 필드 구조라 미구현). 리더별 상태는 README "현재 지원 범위" 표를 본다.
-  **남은 것**: hwpx 하이퍼링크 **쓰기** — 한글에서 링크 하나만 넣고 저장한 golden file로
-  `Command` 문자열 문법을 확정해야 강등을 걷어낼 수 있다.
+  hwpx 하이퍼링크 **쓰기**도 끝났다 — 한글이 저장한 골든에서 `Command` 문법을 확정했다.
 - **v0.3 (진행 중)**: 목록 numbering ✅ · 개요 번호 ✅ — 둘 다 전역 정의 테이블 + 문단
   바인딩으로 간다(`"• "` 텍스트 강등 제거, 중첩 수준 지원). 개요 스킴은 한글 공문서 관행
   `1. → 가. → 1) → 가) → (1) → (가)`. 표 셀 테두리·세로 정렬 ✅. 각주 쓰기 3종 + 삽입 UI ✅.

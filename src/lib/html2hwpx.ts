@@ -93,9 +93,41 @@ interface CharStyle {
   vertAlign: 'super' | 'sub' | null
 }
 
+/**
+ * hwpx의 색은 `#RRGGBB`가 아니라 **`#BBGGRR`**다 — 한글이 COLORREF를 그대로 hex로 적는다.
+ *
+ * 추측이 아니라 한글에게 직접 물어서 확정했다: COM으로 `RGBColor(255, 0, 0)`(순수 빨강)을
+ * 글자색으로 지정하고 hwpx로 저장시켰더니 `textColor="#0000FF"`가 적혔다. 한글이 저장한
+ * 하이퍼링크 기본 글자색이 `#FF0000`(= 파랑)인 것도 같은 이야기다.
+ * 근거 파일은 `samples/hwpx/golden/`에 있다.
+ *
+ * docx·odt는 진짜 `#RRGGBB`라 이 변환은 hwpx 백엔드 안에만 있어야 한다.
+ */
+/**
+ * 각주 첫 문단 맨 앞에 붙는 번호. 한글이 저장한 각주를 그대로 본떴다 —
+ * 이 run이 subList **안**에 있어야 번호가 그려진다(밖에 두면 내용만 나온다).
+ */
+const FOOTNOTE_NUM_RUN =
+  `<hp:run charPrIDRef="0"><hp:ctrl><hp:autoNum num="1" numType="FOOTNOTE">` +
+  `<hp:autoNumFormat type="DIGIT" userChar="" prefixChar="" suffixChar=")" supscript="0"/>` +
+  `</hp:autoNum></hp:ctrl></hp:run>`
+
+/**
+ * '없음' 센티넬. 한글 2018은 `#FFFFFFFF`, 한글 11+는 `none`으로 적는데
+ * **`none`을 한글 2018이 검정으로 읽는다** — 글자 배경이 새까맣게 칠해져 본문이 안 보인다.
+ * `#FFFFFFFF`는 옛 표기라 두 버전 모두 읽으므로 이쪽을 쓴다.
+ * (근거: 한글 2018이 저장한 samples/hwpx/golden/golden-color.hwpx, 한글 11이 저장한 samples/hwpx/*)
+ */
+const NO_COLOR = '#FFFFFFFF'
+
+function bgr(hex: string): string {
+  const m = /^#([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})$/.exec(hex)
+  return m ? `#${m[3]}${m[2]}${m[1]}`.toUpperCase() : hex
+}
+
 const CHARPR_TMPL = (id: number, s: CharStyle, fontId: number) => `<hh:charPr id="${id}" height="${Math.round(
   s.sizePt * 100,
-)}" textColor="${s.color}" shadeColor="${s.shade ?? 'none'}" useFontSpace="0" useKerning="0" symMark="NONE" borderFillIDRef="2">
+)}" textColor="${bgr(s.color)}" shadeColor="${s.shade ? bgr(s.shade) : NO_COLOR}" useFontSpace="0" useKerning="0" symMark="NONE" borderFillIDRef="2">
 <hh:fontRef hangul="${fontId}" latin="${fontId}" hanja="${fontId}" japanese="${fontId}" other="${fontId}" symbol="${fontId}" user="${fontId}"/>
 <hh:ratio hangul="100" latin="100" hanja="100" japanese="100" other="100" symbol="100" user="100"/>
 <hh:spacing hangul="0" latin="0" hanja="0" japanese="0" other="0" symbol="0" user="0"/>
@@ -137,7 +169,7 @@ function hwpxBorder(tag: string, b: IrBorder | null): string {
   if (!b) return `<hh:${tag} type="NONE" width="0.1 mm" color="#000000"/>`
   const mm = b.widthPt * 0.352778
   const snapped = HWPX_BORDER_MM.reduce((best, v) => (Math.abs(v - mm) < Math.abs(best - mm) ? v : best))
-  return `<hh:${tag} type="${HWPX_BORDER_TYPE[b.style]}" width="${snapped} mm" color="${b.color}"/>`
+  return `<hh:${tag} type="${HWPX_BORDER_TYPE[b.style]}" width="${snapped} mm" color="${bgr(b.color)}"/>`
 }
 
 const BORDERFILL_TMPL = (id: number, fill: string | null, border: IrBorder | null) => `<hh:borderFill id="${id}" threeD="0" shadow="0" centerLine="NONE" breakCellSeparateLine="0">
@@ -149,7 +181,7 @@ ${hwpxBorder('topBorder', border)}
 ${hwpxBorder('bottomBorder', border)}
 <hh:diagonal type="NONE" width="0.1 mm" color="#000000"/>
 <hc:fillBrush>
-<hc:winBrush faceColor="${fill ?? 'none'}" hatchColor="#000000" alpha="0"/>
+<hc:winBrush faceColor="${fill ? bgr(fill) : NO_COLOR}" hatchColor="#000000" alpha="0"/>
 </hc:fillBrush>
 </hh:borderFill>`
 
@@ -405,7 +437,10 @@ class HwpxWriter {
 
   /** header.xml에 신규 항목 삽입 + itemCnt 갱신 */
   patchHeader(): string {
-    let xml = this.headerXml
+    // 템플릿이 들고 온 `none`도 같이 바꾼다 — 우리가 만든 charPr은 전부 템플릿의
+    // borderFill id=2를 가리키는데, 그게 `faceColor="none"`이면 한글 2018이 본문을
+    // 통째로 검정으로 칠한다. 값의 출처가 템플릿이라 writer 쪽만 고쳐서는 안 잡힌다.
+    let xml = this.headerXml.replace(/(shadeColor|faceColor)="none"/g, `$1="${NO_COLOR}"`)
     // 신규 폰트: 7개 언어 그룹 전부에 등록 + 그룹별 fontCnt 갱신
     if (this.newFonts.length) {
       const entries = this.newFonts
@@ -723,10 +758,12 @@ class SectionBuilder {
         const content = ref ? this.footnotes.get(ref) : undefined
         if (content) {
           const inst = this.w.nextObjId()
+          // 각주 번호(autoNum)는 subList **바깥**이 아니라 각주 첫 문단의 run 안에 있어야 한다 —
+          // 밖에 두면 한글이 번호를 아예 안 그린다(내용만 나온다). 한글이 저장한 각주를 그대로 본떴다:
+          // samples/hwpx/golden/golden-footnote.hwpx
           runs.push(
-            `<hp:run charPrIDRef="0"><hp:ctrl><hp:footNote number="0" instId="${inst}">` +
-              `<hp:autoNum num="0" numType="FOOTNOTE"/>` +
-              `<hp:subList id="${inst}" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="CENTER" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">${this.blockChildrenXml(content)}</hp:subList>` +
+            `<hp:run charPrIDRef="0"><hp:ctrl><hp:footNote id="" number="0" instId="${inst}">` +
+              `<hp:subList id="${inst}" textDirection="HORIZONTAL" lineWrap="BREAK" vertAlign="TOP" linkListIDRef="0" linkListNextIDRef="0" textWidth="0" textHeight="0" hasTextRef="0" hasNumRef="0">${this.blockChildrenXml(content, FOOTNOTE_NUM_RUN)}</hp:subList>` +
               `</hp:footNote></hp:ctrl></hp:run>`,
           )
         } else {
@@ -744,11 +781,30 @@ class SectionBuilder {
           )
         }
       } else if (el.tagName === 'A') {
-        // 하이퍼링크 **강등**: 주소를 버리고 안쪽 내용만 살린다.
-        // hwpx의 HYPERLINK 필드는 타입명(hwpxlib FieldType)까지는 확정됐지만
-        // hp:stringParam name="Command"의 문자열 문법이 미확인이라, 추측해서 쓰면
-        // 한글이 파일을 못 여는 쪽이 더 위험하다. IR-SPEC 매핑표의 강등 규칙과 같다.
-        runs.push(...this.inlineRuns(el, inherited, defaultCharPr, vertAlign))
+        const href = el.getAttribute('href')
+        const inner = this.inlineRuns(el, inherited, defaultCharPr, vertAlign)
+        if (href) {
+          // 한글이 저장한 하이퍼링크 필드를 그대로 본떴다 — 파라미터 여섯 개가 다 있어야 한다.
+          // 근거: samples/hwpx/golden/golden-hyperlink.hwpx (한글에게 링크 하나만 넣게 하고 저장시킨 것)
+          const id = this.w.nextObjId()
+          const fid = this.w.nextObjId()
+          runs.push(
+            `<hp:run charPrIDRef="0"><hp:ctrl>` +
+              `<hp:fieldBegin id="${id}" type="HYPERLINK" name="" editable="0" dirty="0" zorder="-1" fieldid="${fid}">` +
+              `<hp:parameters cnt="6" name="">` +
+              `<hp:integerParam name="Prop">0</hp:integerParam>` +
+              `<hp:stringParam name="Command">${esc(href)}</hp:stringParam>` +
+              `<hp:stringParam name="Path">${esc(href)}</hp:stringParam>` +
+              `<hp:stringParam name="Category">HWPHYPERLINK_TYPE_HWP</hp:stringParam>` +
+              `<hp:stringParam name="TargetType">HWPHYPERLINK_TARGET_BOOKMARK</hp:stringParam>` +
+              `<hp:stringParam name="DocOpenType">HWPHYPERLINK_JUMP_CURRENTTAB</hp:stringParam>` +
+              `</hp:parameters></hp:fieldBegin></hp:ctrl></hp:run>`,
+            ...inner,
+            `<hp:run charPrIDRef="0"><hp:ctrl><hp:fieldEnd beginIDRef="${id}" fieldid="${fid}"/></hp:ctrl><hp:t/></hp:run>`,
+          )
+        } else {
+          runs.push(...inner)
+        }
       }
     }
     return runs

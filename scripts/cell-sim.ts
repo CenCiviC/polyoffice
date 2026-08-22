@@ -123,12 +123,13 @@ normalizeIR(root)
   const header = strFromU8(zip['Contents/header.xml'])
   const section = strFromU8(zip['Contents/section0.xml'])
   const fills = [...header.matchAll(/<hh:borderFill id="\d+"[\s\S]*?<\/hh:borderFill>/g)].map((m) => m[0])
-  const ours = fills.filter((f) => /#c2352b|#555555/i.test(f))
+  // hwpx 색은 #BBGGRR — #c2352b는 #2b35c2로, #555555는 대칭이라 그대로
+  const ours = fills.filter((f) => /#2b35c2|#555555/i.test(f))
   check('셀 테두리가 borderFill로 등록된다', ours.length >= 2, `${ours.length}개`)
   // 실물 한글 문서에서 확인한 종류·굵기 표기
   check(
     '파선은 DASH · 굵기는 한글이 고르는 mm 값으로 스냅',
-    /type="DASH" width="0\.7 mm" color="#[Cc]2352[Bb]"/.test(header),
+    /type="DASH" width="0.7 mm" color="#2B35C2"/.test(header),
     (header.match(/type="DASH"[^/]*/) ?? [''])[0],
   )
   check('기본 테두리는 SOLID 0.25mm · #555555', /type="SOLID" width="0\.25 mm" color="#555555"/.test(header))

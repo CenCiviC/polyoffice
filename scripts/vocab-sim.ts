@@ -124,9 +124,22 @@ check('SOT가 IR 계약 통과', validateIR(root).length === 0, validateIR(root)
   check('hwpx 첫 줄 hc:intent', /<hc:intent value="1300"/.test(header))
   check('hwpx 내어쓰기(음수 intent)', /<hc:intent value="-1500"/.test(header))
   check('hwpx 단락 앞뒤 여백', /<hc:prev value="500"/.test(header) && /<hc:next value="300"/.test(header))
-  // ★ 강등의 핵심: 주소는 버려도 글자는 남아야 한다
-  check('hwpx 링크 강등 — 글자 보존', xml.includes('링크된글자'))
-  check('hwpx 링크 강등 — 주소 없음', !xml.includes('mois.go.kr'))
+  // 강등이 아니라 진짜 필드로 나간다 — 한글이 저장한 형태를 그대로 본떴다
+  // (samples/hwpx/golden/golden-hyperlink.hwpx)
+  check('hwpx 링크 — 글자 보존', xml.includes('링크된글자'))
+  check('hwpx 링크 — HYPERLINK 필드로 나간다', /<hp:fieldBegin[^>]*type="HYPERLINK"/.test(xml))
+  check(
+    'hwpx 링크 — 주소가 Command·Path에 실린다',
+    xml.includes('<hp:stringParam name="Command">') && (xml.match(/mois.go.kr/g) ?? []).length >= 2,
+  )
+  check(
+    'hwpx 링크 — 파라미터 여섯 개(골든 그대로)',
+    xml.includes('<hp:parameters cnt="6"') && xml.includes('HWPHYPERLINK_TYPE_HWP'),
+  )
+  check(
+    'hwpx 링크 — fieldEnd가 짝을 이룬다',
+    (xml.match(/<hp:fieldBegin/g) ?? []).length === (xml.match(/<hp:fieldEnd/g) ?? []).length,
+  )
   check('hwpx 첨자 글자 보존', xml.includes('H') && xml.includes('2'))
 }
 

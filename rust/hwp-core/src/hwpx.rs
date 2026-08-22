@@ -191,7 +191,7 @@ fn parse_header(doc: &Document, ids: &mut IdMaps) -> DocInfo {
             .descendants()
             .find(|n| n.tag_name().name() == "winBrush")
             .and_then(|n| n.attribute("faceColor"))
-            .and_then(hex_rgb);
+            .and_then(hex_bgr);
         // IR은 네 변을 따로 담지 못한다 — NONE이 아닌 첫 변을 대표로 쓴다.
         // (넷이 다른 표는 흔치 않고, 다르면 가장 눈에 띄는 변이 남는 편이 낫다.)
         // hwpx는 네 변을 늘 적는다 — 읽었다는 사실 자체를 Some으로, 값이 NONE뿐이면 Some(None)
@@ -244,7 +244,7 @@ fn parse_header(doc: &Document, ids: &mut IdMaps) -> DocInfo {
                 .unwrap_or(100),
             color: cp
                 .attribute("textColor")
-                .and_then(hex_rgb)
+                .and_then(hex_bgr)
                 .unwrap_or([0, 0, 0]),
             attr,
             font_id: child("fontRef")
@@ -360,13 +360,21 @@ fn hyperlink_target(field: Node) -> Option<String> {
     Some(first.to_string())
 }
 
-fn hex_rgb(s: &str) -> Option<[u8; 3]> {
+/// hwpx의 색 문자열 → `[r, g, b]`.
+///
+/// **hwpx는 `#RRGGBB`가 아니라 `#BBGGRR`다.** 한글이 COLORREF(0x00BBGGRR)를 그대로 hex로
+/// 적기 때문이고, `.hwp` 바이너리에서 `reader::rgb`가 하는 뒤집기와 같은 이야기다.
+/// 한글에게 `RGBColor(255, 0, 0)`(순수 빨강)을 지정하고 저장시켜 `#0000FF`가 나오는 걸로
+/// 확정했다 — 근거 파일은 `samples/hwpx/golden/`.
+///
+/// docx·odt는 진짜 `#RRGGBB`라 그쪽은 `xml::hex_rgb`를 그대로 쓴다.
+fn hex_bgr(s: &str) -> Option<[u8; 3]> {
     let hex = s.strip_prefix('#')?;
     if hex.len() != 6 {
         return None;
     }
     let v = u32::from_str_radix(hex, 16).ok()?;
-    Some([(v >> 16) as u8, (v >> 8) as u8, (v & 0xff) as u8])
+    Some([(v & 0xff) as u8, ((v >> 8) & 0xff) as u8, (v >> 16) as u8])
 }
 
 // ---------------- section{i}.xml → Section ----------------
@@ -388,7 +396,7 @@ fn read_border(n: Node) -> Option<Border> {
     Some(Border {
         width_pt: mm * 72.0 / 25.4,
         style: style.to_string(),
-        color: n.attribute("color").and_then(hex_rgb).unwrap_or([0, 0, 0]),
+        color: n.attribute("color").and_then(hex_bgr).unwrap_or([0, 0, 0]),
     })
 }
 

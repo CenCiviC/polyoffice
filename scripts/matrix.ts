@@ -7,6 +7,7 @@
 import { mkdirSync, writeFileSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { Window } from 'happy-dom'
+import { unzipSync, strFromU8 } from 'fflate'
 
 import { html2hwpx } from '../src/lib/html2hwpx'
 import { html2docx } from '../src/lib/html2docx'
@@ -143,6 +144,18 @@ const TARGETS: Target[] = [
   { ext: 'doc', write: () => null, note: 'OLE 바이너리 쓰기 백엔드 없음' },
 ]
 
+/**
+ * hwpx 색은 `#BBGGRR`다(한글이 COLORREF를 그대로 적는다 — samples/hwpx/golden/).
+ * 쓰기는 고쳤지만 **읽기는 Rust 안에 있고 이 기기엔 Rust가 없어 wasm을 다시 못 만들었다** —
+ * pkg/의 wasm이 소스보다 낡아서 되읽기만 색을 뒤집어 본다.
+ * 파일에 제대로 들어갔는지를 직접 확인하고 `~`로 표시한다. `bun run wasm:build` 하면 ✓가 된다.
+ */
+function staleHwpxColor(ext: string, bytes: Uint8Array): boolean {
+  if (ext !== 'hwpx') return false
+  const header = strFromU8(unzipSync(bytes)['Contents/header.xml'] ?? new Uint8Array())
+  return header.includes('textColor="#0000C0"') // rgb(192,0,0) → BGR
+}
+
 const rows: string[] = []
 let failures = 0
 
@@ -176,7 +189,7 @@ for (const target of TARGETS) {
     s.bold ? '굵게' : '굵게✗',
     s.italic ? '기울임' : '기울임✗',
     s.underline ? '밑줄' : '밑줄✗',
-    s.red ? '빨강' : '빨강✗',
+    s.red ? '빨강' : staleHwpxColor(target.ext, bytes) ? '빨강~' : '빨강✗',
     s.big ? '큰글자' : '큰글자✗',
     s.maxColSpan >= 2 ? '가로병합' : '가로병합✗',
     s.maxRowSpan >= 2 ? '세로병합' : '세로병합✗',
