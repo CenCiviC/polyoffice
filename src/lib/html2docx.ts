@@ -136,48 +136,63 @@ const STYLES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
  * `w:lvlText`의 `%n`은 n번째 **수준의 현재 번호**다(1부터). 글머리표는 셀 것이 없으므로
  * `numFmt="bullet"`에 문자를 그대로 적는다.
  */
-const NUMBERING = (lists: IrListDef[], outlineId: number | null) => `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
-${
-  outlineId === null
-    ? ''
-    : // 개요 번호는 문서에 하나. 들여쓰기를 주지 않는 이유는 뷰어가 `::before`로 제목 줄
-      // 앞에 그냥 붙여 그리기 때문 — 화면과 저장물이 같아야 한다.
-      `<w:abstractNum w:abstractNumId="${outlineId}"><w:multiLevelType w:val="multilevel"/>` +
-      OUTLINE_SCHEME.map(
-        (lv, i) =>
-          // `w:suff`가 없으면 Word 기본이 **탭**이라 번호와 제목 사이가 다음 탭 정지까지
-          // 벌어진다. 뷰어(`::before`)와 odt는 공백 하나라 셋이 어긋났다.
-          // CT_Lvl은 순서 있는 sequence — suff는 lvlText보다 앞이다.
-          `<w:lvl w:ilvl="${i}"><w:start w:val="1"/>` +
-          `<w:numFmt w:val="${lv.style === 'hangul' ? 'ganada' : 'decimal'}"/>` +
-          `<w:suff w:val="space"/>` +
-          `<w:lvlText w:val="${esc(`${lv.prefix}%${i + 1}${lv.suffix}`)}"/><w:lvlJc w:val="left"/>` +
-          `<w:pPr><w:ind w:left="0" w:hanging="0"/></w:pPr></w:lvl>`,
-      ).join('') +
-      `</w:abstractNum><w:num w:numId="${outlineId}"><w:abstractNumId w:val="${outlineId}"/></w:num>`
+const OUTLINE_ABSTRACT = (outlineId: number) =>
+  // 개요 번호는 문서에 하나. 들여쓰기를 주지 않는 이유는 뷰어가 `::before`로 제목 줄
+  // 앞에 그냥 붙여 그리기 때문 — 화면과 저장물이 같아야 한다.
+  `<w:abstractNum w:abstractNumId="${outlineId}"><w:multiLevelType w:val="multilevel"/>` +
+  OUTLINE_SCHEME.map(
+    (lv, i) =>
+      // `w:suff`가 없으면 Word 기본이 **탭**이라 번호와 제목 사이가 다음 탭 정지까지
+      // 벌어진다. 뷰어(`::before`)와 odt는 공백 하나라 셋이 어긋났다.
+      // CT_Lvl은 순서 있는 sequence — suff는 lvlText보다 앞이다.
+      `<w:lvl w:ilvl="${i}"><w:start w:val="1"/>` +
+      `<w:numFmt w:val="${lv.style === 'hangul' ? 'ganada' : 'decimal'}"/>` +
+      `<w:suff w:val="space"/>` +
+      `<w:lvlText w:val="${esc(`${lv.prefix}%${i + 1}${lv.suffix}`)}"/><w:lvlJc w:val="left"/>` +
+      `<w:pPr><w:ind w:left="0" w:hanging="0"/></w:pPr></w:lvl>`,
+  ).join('') +
+  `</w:abstractNum>`
+
+const LIST_ABSTRACT = (list: IrListDef) =>
+  `<w:abstractNum w:abstractNumId="${list.id}"><w:multiLevelType w:val="${list.levels.length > 1 ? 'multilevel' : 'singleLevel'}"/>` +
+  list.levels
+    .map((marker, lv) => {
+      const [fmt, text] =
+        marker === 'decimal' ? ['decimal', `%${lv + 1}.`] : ['bullet', bulletChar(lv)]
+      return (
+        `<w:lvl w:ilvl="${lv}"><w:start w:val="1"/><w:numFmt w:val="${fmt}"/>` +
+        `<w:lvlText w:val="${esc(text)}"/><w:lvlJc w:val="left"/>` +
+        `<w:pPr><w:ind w:left="${twip(LIST_INDENT_PT * (lv + 1))}" w:hanging="${twip(LIST_INDENT_PT)}"/></w:pPr>` +
+        `</w:lvl>`
+      )
+    })
+    .join('') +
+  `</w:abstractNum>`
+
+/**
+ * Word는 `numbering.xml`을 **문서 순서대로** 푼다 — `w:abstractNum`이 전부 먼저 오고,
+ * 둘 다 id 오름차순이어야 한다. 개요 정의는 문서를 훑는 도중에 id를 받기 때문에
+ * 예전에는 `abstractNum 3 · num 3 · abstractNum 1 · abstractNum 2 · num 1 · num 2` 꼴로
+ * 나갔고, 그러면 **Word가 2수준부터 번호를 잃는다**(가.→1., 3수준은 아예 없음).
+ * LibreOffice는 순서를 안 가려서 오래 안 들켰다. 정렬만 해 주면 살아난다 — 실기기 확인.
+ */
+const NUMBERING = (lists: IrListDef[], outlineId: number | null) => {
+  const abstracts = lists.map((l) => ({ id: l.id, xml: LIST_ABSTRACT(l) }))
+  const nums = lists.map((l) => ({ id: l.id, xml: `<w:num w:numId="${l.id}"><w:abstractNumId w:val="${l.id}"/></w:num>` }))
+  if (outlineId !== null) {
+    abstracts.push({ id: outlineId, xml: OUTLINE_ABSTRACT(outlineId) })
+    nums.push({ id: outlineId, xml: `<w:num w:numId="${outlineId}"><w:abstractNumId w:val="${outlineId}"/></w:num>` })
+  }
+  const byId = (a: { id: number }, b: { id: number }) => a.id - b.id
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">${abstracts
+    .sort(byId)
+    .map((a) => a.xml)
+    .join('')}${nums
+    .sort(byId)
+    .map((n) => n.xml)
+    .join('')}</w:numbering>`
 }
-${lists
-  .map(
-    (list) =>
-      `<w:abstractNum w:abstractNumId="${list.id}"><w:multiLevelType w:val="${list.levels.length > 1 ? 'multilevel' : 'singleLevel'}"/>` +
-      list.levels
-        .map((marker, lv) => {
-          const [fmt, text] =
-            marker === 'decimal' ? ['decimal', `%${lv + 1}.`] : ['bullet', bulletChar(lv)]
-          return (
-            `<w:lvl w:ilvl="${lv}"><w:start w:val="1"/><w:numFmt w:val="${fmt}"/>` +
-            `<w:lvlText w:val="${esc(text)}"/><w:lvlJc w:val="left"/>` +
-            `<w:pPr><w:ind w:left="${twip(LIST_INDENT_PT * (lv + 1))}" w:hanging="${twip(LIST_INDENT_PT)}"/></w:pPr>` +
-            `</w:lvl>`
-          )
-        })
-        .join('') +
-      `</w:abstractNum>`,
-  )
-  .join('')}
-${lists.map((list) => `<w:num w:numId="${list.id}"><w:abstractNumId w:val="${list.id}"/></w:num>`).join('')}
-</w:numbering>`
 
 /**
  * footnotes.xml. Word는 id -1(구분선)·0(이어짐 구분선) 두 개를 **먼저 요구한다** —

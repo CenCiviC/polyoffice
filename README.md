@@ -203,6 +203,7 @@ hwpx의 각주·머리말·꼬리말·쪽번호 매핑도 **실물 한글 문서
 |---|:--:|:--:|:--:|
 | LibreOffice 26.2 (열어서 PDF 렌더) | ✓ | ✓ | — (LibreOffice에 한글 포맷 필터 없음) |
 | pandoc 3.9 (독립 리더) | ✓ | ✓ | — |
+| **Microsoft Word 2016** (열어서 조판 확인) | ✓ | — | — |
 | [hwpxlib](https://github.com/neolord0/hwpxlib) (HWPX 레퍼런스 구현) | — | — | ✓ |
 | **한글 2018** (열어서 조판 확인) | — | — | ✓ |
 

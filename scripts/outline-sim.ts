@@ -89,6 +89,46 @@ normalizeIR(root)
   const numPr = [...document.matchAll(/<w:ilvl w:val="(\d+)"\/><w:numId w:val="(\d+)"\/>/g)].map((m) => m[1])
   check('제목 4개만 묶이고 수준은 0·1·1·0', numPr.join('') === '0110', numPr.join(''))
   check('본문에 번호 텍스트가 없다', !/<w:t[^>]*>\s*(\d+\.|[가-힣]\.)\s*<\/w:t>/.test(document))
+
+  // Word는 numbering.xml을 문서 순서대로 푼다 — abstractNum이 전부 먼저, 둘 다 id 오름차순.
+  // 어기면 2수준부터 번호를 잃는다(가.→1., 3수준은 아예 사라짐). LibreOffice는 순서를 안 가려
+  // 오래 안 들켰고, 진짜 Word로 열어 보고서야 드러났다.
+  const order = [...numbering.matchAll(/<w:(abstractNum w:abstractNumId|num w:numId)="(\d+)"/g)].map((m) => ({
+    kind: m[1].startsWith('abstractNum') ? 'a' : 'n',
+    id: Number(m[2]),
+  }))
+  const firstNum = order.findIndex((o) => o.kind === 'n')
+  check(
+    'abstractNum이 전부 num보다 앞에',
+    firstNum === -1 || order.slice(firstNum).every((o) => o.kind === 'n'),
+    order.map((o) => o.kind + o.id).join(' '),
+  )
+  const asc = (xs: number[]) => xs.every((v, i) => i === 0 || xs[i - 1] < v)
+  check(
+    'abstractNum·num 둘 다 id 오름차순',
+    asc(order.filter((o) => o.kind === 'a').map((o) => o.id)) &&
+      asc(order.filter((o) => o.kind === 'n').map((o) => o.id)),
+    order.map((o) => o.kind + o.id).join(' '),
+  )
+
+  // 목록과 개요가 섞인 문서라야 순서가 실제로 어긋난다 — 개요 정의는 문서를 훑는 도중에
+  // id를 받아서, 정렬하지 않으면 목록 정의들 사이에 끼어 나간다.
+  const mixed = docOf(
+    `<doc-section data-ir="${IR_VERSION}">` +
+      `<ul><li>글머리</li></ul><ol><li>번호</li></ol>` +
+      `<h1 data-num="outline">제목</h1><h2 data-num="outline">절</h2>` +
+      `</doc-section>`,
+  )
+  normalizeIR(mixed)
+  const mixedNum = strFromU8(unzipSync(html2docx(mixed).data)['word/numbering.xml'] ?? new Uint8Array())
+  const mo = [...mixedNum.matchAll(new RegExp(String.raw`<w:(abstractNum w:abstractNumId|num w:numId)="([0-9]+)"`, "g"))].map(
+    (m) => (m[1].startsWith('abstractNum') ? 'a' : 'n') + m[2],
+  )
+  check(
+    '목록+개요가 섞여도 a1 a2 a3 n1 n2 n3 꼴',
+    mo.join(' ') === 'a1 a2 a3 n1 n2 n3',
+    mo.join(' '),
+  )
 }
 
 // ── 5. odt ──────────────────────────────────────────────────────────
