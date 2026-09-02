@@ -33,7 +33,22 @@ pub fn parse_hwpx_document(data: &[u8]) -> Result<DocModel, String> {
         Document::parse(&header_xml).map_err(|e| format!("header.xml 파싱 실패: {e}"))?;
 
     let mut ids = IdMaps::default();
-    let mut info = parse_header(&header_doc, &mut ids);
+    let (mut info, version, sec_cnt) = {
+        let info = parse_header(&header_doc, &mut ids);
+        let version = header_doc
+            .root_element()
+            .attribute("version")
+            .map(|v| format!("hwpx-{v}"))
+            .unwrap_or_else(|| "hwpx".into());
+        let sec_cnt: usize = header_doc
+            .root_element()
+            .attribute("secCnt")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1);
+        (info, version, sec_cnt)
+    };
+    drop(header_doc);
+    drop(header_xml);
 
     // 임베디드 바이너리: content.hpf 매니페스트의 BinData 항목을 등장 순서대로 적재
     if let Ok(hpf) = read_zip_string(&mut zip, "Contents/content.hpf") {
@@ -92,18 +107,6 @@ pub fn parse_hwpx_document(data: &[u8]) -> Result<DocModel, String> {
         });
     }
 
-    let version = header_doc
-        .root_element()
-        .attribute("version")
-        .map(|v| format!("hwpx-{v}"))
-        .unwrap_or_else(|| "hwpx".into());
-
-    let sec_cnt: usize = header_doc
-        .root_element()
-        .attribute("secCnt")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(1);
-
     let mut sections = Vec::new();
     for i in 0..sec_cnt.max(1) {
         let path = format!("Contents/section{i}.xml");
@@ -125,7 +128,7 @@ fn read_zip_bytes<R: Read + std::io::Seek>(
     name: &str,
 ) -> Result<Vec<u8>, String> {
     let mut file = zip.by_name(name).map_err(|e| format!("{name} 없음: {e}"))?;
-    let mut buf = Vec::new();
+    let mut buf = Vec::with_capacity(file.size() as usize);
     file.read_to_end(&mut buf)
         .map_err(|e| format!("{name} 읽기 실패: {e}"))?;
     Ok(buf)
@@ -135,7 +138,7 @@ fn read_zip_string<R: Read + std::io::Seek>(
     zip: &mut zip::ZipArchive<R>,
     name: &str,
 ) -> Result<String, String> {
-    Ok(String::from_utf8_lossy(&read_zip_bytes(zip, name)?).into_owned())
+    Ok(crate::zipfs::into_string(read_zip_bytes(zip, name)?))
 }
 
 // ---------------- header.xml → DocInfo ----------------
@@ -395,7 +398,7 @@ fn read_border(n: Node) -> Option<Border> {
         .unwrap_or(0.12);
     Some(Border {
         width_pt: mm * 72.0 / 25.4,
-        style: style.to_string(),
+        style,
         color: n.attribute("color").and_then(hex_bgr).unwrap_or([0, 0, 0]),
     })
 }
@@ -473,7 +476,7 @@ fn parse_paragraph(p: Node, section: &mut Section, ids: &IdMaps) -> Paragraph {
                                     char_shape_id: shape_id,
                                     text: String::new(),
                                     link: None,
-                                    field: Some("page".to_string()),
+                                    field: Some("page"),
                                 });
                             }
                             // 각주는 컨트롤이다 — run 직계로도 오지만 <hp:ctrl>로 감싸 오는 쪽이
@@ -611,11 +614,7 @@ fn parse_pic(pic: Node, ids: &IdMaps) -> Option<Image> {
 fn sublist_paragraphs(node: Node, section: &mut Section, ids: &IdMaps) -> Vec<Paragraph> {
     node.children()
         .filter(|n| n.tag_name().name() == "subList")
-        .flat_map(|sl| {
-            sl.children()
-                .filter(|n| n.tag_name().name() == "p")
-                .collect::<Vec<_>>()
-        })
+        .flat_map(|sl| sl.children().filter(|n| n.tag_name().name() == "p"))
         .map(|p| parse_paragraph(p, section, ids))
         .collect()
 }
@@ -651,8 +650,7 @@ fn parse_table(tbl: Node, section: &mut Section, ids: &IdMaps) -> Table {
                     "TOP" => "top",
                     "BOTTOM" => "bottom",
                     _ => "middle",
-                })
-                .map(str::to_string);
+                });
 
             let row = dim(addr, "rowAddr").unwrap_or(0) as u16;
             let cell = Cell {

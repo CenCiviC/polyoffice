@@ -166,9 +166,22 @@ struct StyleDef {
     margins: MarginFmt,
 }
 
+/// basedOn 체인을 다 적용한 결과. 스타일 수는 수십 개인데 참조는 문단·런마다
+/// 일어나므로, load() 때 한 번 계산해 두고 그 뒤에는 조회만 한다.
+#[derive(Clone, Default)]
+struct Resolved {
+    run: RunFmt,
+    align: Option<u8>,
+    margins: MarginFmt,
+}
+
 #[derive(Default)]
 struct Styles {
     defs: HashMap<String, StyleDef>,
+    /// styleId → basedOn까지 적용한 결과 (load()에서 미리 채운다)
+    resolved: HashMap<String, Resolved>,
+    /// 이름이 없거나 모르는 스타일일 때 돌려줄 빈 결과
+    empty: Resolved,
     default_run: RunFmt,
     default_align: Option<u8>,
     default_margins: MarginFmt,
@@ -206,24 +219,38 @@ impl Styles {
                 },
             );
         }
+        let ids: Vec<String> = out.defs.keys().cloned().collect();
+        for id in ids {
+            let r = out.walk(Some(&id), 0);
+            out.resolved.insert(id, r);
+        }
         out
     }
 
-    /// basedOn 체인을 뿌리부터 적용한 결과. 순환 참조는 깊이로 끊는다.
-    fn resolve(&self, id: Option<&str>, depth: u8) -> (RunFmt, Option<u8>, MarginFmt) {
+    /// basedOn 체인을 뿌리부터 적용한다. 순환 참조는 깊이로 끊는다. load()에서만 부른다.
+    fn walk(&self, id: Option<&str>, depth: u8) -> Resolved {
         let Some(def) = id.and_then(|i| self.defs.get(i)) else {
-            return (RunFmt::default(), None, MarginFmt::default());
+            return Resolved::default();
         };
         if depth > 12 {
-            return (def.run.clone(), def.align, def.margins);
+            return Resolved {
+                run: def.run.clone(),
+                align: def.align,
+                margins: def.margins,
+            };
         }
-        let (mut run, mut align, mut margins) = self.resolve(def.based_on.as_deref(), depth + 1);
-        run.overlay(&def.run);
+        let mut out = self.walk(def.based_on.as_deref(), depth + 1);
+        out.run.overlay(&def.run);
         if def.align.is_some() {
-            align = def.align;
+            out.align = def.align;
         }
-        margins.overlay(&def.margins);
-        (run, align, margins)
+        out.margins.overlay(&def.margins);
+        out
+    }
+
+    /// 미리 계산해 둔 결과를 빌려준다 (체인을 다시 걷지 않는다).
+    fn resolve(&self, id: Option<&str>) -> &Resolved {
+        id.and_then(|i| self.resolved.get(i)).unwrap_or(&self.empty)
     }
 }
 
@@ -441,15 +468,15 @@ impl Ctx<'_, '_> {
             .and_then(|pr| child(pr, "pStyle"))
             .and_then(|s| attr(s, "val"))
             .or(self.styles.default_para_style.as_deref());
-        let (style_run, style_align, style_margins) = self.styles.resolve(style_id, 0);
+        let style = self.styles.resolve(style_id);
 
         let align = read_align(ppr)
-            .or(style_align)
+            .or(style.align)
             .or(self.styles.default_align)
             .unwrap_or(0);
         // 여백도 정렬과 같은 순서로 겹친다: docDefaults ← 문단 스타일 ← 직접 지정
         let mut margins = self.styles.default_margins;
-        margins.overlay(&style_margins);
+        margins.overlay(&style.margins);
         margins.overlay(&read_margins(ppr));
         // 문단 머리 — 제목은 w:outlineLvl(또는 Heading 스타일), 목록은 w:numPr.
         // 둘 다 없으면 보통 문단이다.
@@ -461,7 +488,7 @@ impl Ctx<'_, '_> {
 
         // 문단 기본 서식 = docDefaults ← 문단 스타일
         let mut base = self.styles.default_run.clone();
-        base.overlay(&style_run);
+        base.overlay(&style.run);
         self.runs_of(p, &base, &mut para, fns, None);
         para
     }
@@ -506,7 +533,7 @@ impl Ctx<'_, '_> {
                             char_shape_id: 0,
                             text: String::new(),
                             link: None,
-                            field: Some(k.to_string()),
+                            field: Some(k),
                         }),
                         // 아는 필드가 아니면 안쪽 글자를 그대로 살린다
                         None => self.runs_of(node, base, para, fns, link),
@@ -532,8 +559,7 @@ impl Ctx<'_, '_> {
             .and_then(|p| child(p, "rStyle"))
             .and_then(|s| attr(s, "val"))
         {
-            let (run_style, _, _) = self.styles.resolve(Some(id), 0);
-            fmt.overlay(&run_style);
+            fmt.overlay(&self.styles.resolve(Some(id)).run);
         }
         fmt.overlay(&read_rpr(rpr));
         let shape = self.shape(&fmt);
@@ -541,7 +567,14 @@ impl Ctx<'_, '_> {
         let mut text = String::new();
         for node in r.children().filter(|n| n.is_element()) {
             match node.tag_name().name() {
-                "t" | "delText" => text.push_str(&node.text().unwrap_or("").replace('\r', "")),
+                "t" | "delText" => {
+                    // 대부분 \r이 없다 — 있을 때만 새로 만든다
+                    let raw = node.text().unwrap_or("");
+                    match raw.contains('\r') {
+                        true => text.push_str(&raw.replace('\r', "")),
+                        false => text.push_str(raw),
+                    }
+                }
                 "br" | "cr" => text.push('\n'),
                 "tab" => text.push('\t'),
                 "noBreakHyphen" => text.push('-'),
@@ -715,8 +748,7 @@ impl Ctx<'_, '_> {
                         "top" => "top",
                         "bottom" => "bottom",
                         _ => "middle",
-                    })
-                    .map(str::to_string);
+                    });
 
                 let cell = Cell {
                     col: gcol,
@@ -753,7 +785,7 @@ fn read_border(n: Xml) -> Option<Border> {
     let color = attr(n, "color").filter(|c| *c != "auto").and_then(hex_rgb);
     Some(Border {
         width_pt: num::<u32>(Some(n), "sz").unwrap_or(4) as f32 / 8.0,
-        style: style.to_string(),
+        style,
         color: color.unwrap_or([0, 0, 0]),
     })
 }

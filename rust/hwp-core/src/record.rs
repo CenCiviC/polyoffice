@@ -2,15 +2,15 @@
 
 use crate::reader::ByteReader;
 
-pub struct Record {
+pub struct Record<'a> {
     pub tag: u16,
-    pub data: Vec<u8>,
-    pub children: Vec<Record>,
+    pub data: &'a [u8],
+    pub children: Vec<Record<'a>>,
 }
 
-pub fn parse_tree(data: &[u8]) -> Result<Vec<Record>, String> {
+pub fn parse_tree(data: &[u8]) -> Result<Vec<Record<'_>>, String> {
     let mut reader = ByteReader::new(data);
-    let mut flat: Vec<(u16, u16, Vec<u8>)> = Vec::new();
+    let mut flat: Vec<(u16, u16, &[u8])> = Vec::new();
 
     while !reader.is_eof() {
         let header = reader.u32()?;
@@ -20,15 +20,15 @@ pub fn parse_tree(data: &[u8]) -> Result<Vec<Record>, String> {
         if size == 0xFFF {
             size = reader.u32()?;
         }
-        let payload = reader.vec(size as usize)?;
+        let payload = reader.slice(size as usize)?;
         flat.push((tag, level, payload));
     }
 
     let mut idx = 0;
-    Ok(build_level(&mut flat, &mut idx, 0))
+    Ok(build_level(&flat, &mut idx, 0))
 }
 
-fn build_level(flat: &mut Vec<(u16, u16, Vec<u8>)>, idx: &mut usize, level: u16) -> Vec<Record> {
+fn build_level<'a>(flat: &[(u16, u16, &'a [u8])], idx: &mut usize, level: u16) -> Vec<Record<'a>> {
     let mut out = Vec::new();
     while *idx < flat.len() {
         let (tag, lv, _) = &flat[*idx];
@@ -40,7 +40,7 @@ fn build_level(flat: &mut Vec<(u16, u16, Vec<u8>)>, idx: &mut usize, level: u16)
             // 부모 없는 깊은 레코드(비정상) — 마지막 노드에 붙이지 않고 현재 레벨로 승격 처리
             // 정상 파일에서는 발생하지 않는다.
         }
-        let data = std::mem::take(&mut flat[*idx].2);
+        let data = flat[*idx].2;
         *idx += 1;
         let children = build_level(flat, idx, level + 1);
         out.push(Record {

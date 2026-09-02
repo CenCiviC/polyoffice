@@ -28,10 +28,6 @@ impl<'a> ByteReader<'a> {
         Ok(self.take(1)?[0])
     }
 
-    pub fn i8(&mut self) -> Result<i8, String> {
-        Ok(self.take(1)?[0] as i8)
-    }
-
     pub fn u16(&mut self) -> Result<u16, String> {
         let b = self.take(2)?;
         Ok(u16::from_le_bytes([b[0], b[1]]))
@@ -54,6 +50,10 @@ impl<'a> ByteReader<'a> {
 
     pub fn skip(&mut self, n: usize) -> Result<(), String> {
         self.take(n).map(|_| ())
+    }
+
+    pub fn slice(&mut self, n: usize) -> Result<&'a [u8], String> {
+        self.take(n)
     }
 
     pub fn vec(&mut self, n: usize) -> Result<Vec<u8>, String> {

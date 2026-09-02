@@ -10,14 +10,22 @@ pub fn open(data: &[u8]) -> Result<Zip<'_>, String> {
 
 pub fn bytes(zip: &mut Zip, name: &str) -> Result<Vec<u8>, String> {
     let mut file = zip.by_name(name).map_err(|e| format!("{name} 없음: {e}"))?;
-    let mut buf = Vec::new();
+    let mut buf = Vec::with_capacity(file.size() as usize);
     file.read_to_end(&mut buf)
         .map_err(|e| format!("{name} 읽기 실패: {e}"))?;
     Ok(buf)
 }
 
 pub fn text(zip: &mut Zip, name: &str) -> Result<String, String> {
-    Ok(String::from_utf8_lossy(&bytes(zip, name)?).into_owned())
+    Ok(into_string(bytes(zip, name)?))
+}
+
+/// 유효한 UTF-8이면 Vec을 그대로 옮긴다 (from_utf8_lossy(..).into_owned()은 항상 복사한다)
+pub fn into_string(bytes: Vec<u8>) -> String {
+    match String::from_utf8(bytes) {
+        Ok(s) => s,
+        Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+    }
 }
 
 pub fn has(zip: &mut Zip, name: &str) -> bool {

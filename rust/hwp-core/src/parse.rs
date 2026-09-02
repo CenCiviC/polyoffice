@@ -38,7 +38,7 @@ const fn ctrl_id(s: &[u8; 4]) -> u32 {
 }
 
 pub fn parse_document(data: &[u8]) -> Result<DocModel, String> {
-    let cursor = Cursor::new(data.to_vec());
+    let cursor = Cursor::new(data);
     let mut cfb = cfb::CompoundFile::open(cursor).map_err(|e| format!("CFB 열기 실패: {e}"))?;
 
     // FileHeader: 256바이트, 시그니처 + 버전 + 속성 플래그
@@ -72,7 +72,7 @@ pub fn parse_document(data: &[u8]) -> Result<DocModel, String> {
         let path = format!("/BinData/BIN{id:04X}.{ext}");
         let raw = read_stream(&mut cfb, &path).unwrap_or_default();
         // 압축 여부는 항목마다 다를 수 있어 해제 실패 시 원본 사용
-        let bytes = maybe_inflate(raw.clone(), true).unwrap_or(raw);
+        let bytes = inflate(&raw).unwrap_or(raw);
         info.bin_data.push(BinData {
             ext: ext.to_lowercase(),
             data: base64::engine::general_purpose::STANDARD.encode(&bytes),
@@ -95,7 +95,7 @@ pub fn parse_document(data: &[u8]) -> Result<DocModel, String> {
     })
 }
 
-fn read_stream<F: Read + std::io::Seek + std::io::Write>(
+fn read_stream<F: Read + std::io::Seek>(
     cfb: &mut cfb::CompoundFile<F>,
     path: &str,
 ) -> Result<Vec<u8>, String> {
@@ -113,8 +113,12 @@ fn maybe_inflate(data: Vec<u8>, compressed: bool) -> Result<Vec<u8>, String> {
     if !compressed {
         return Ok(data);
     }
+    inflate(&data)
+}
+
+fn inflate(data: &[u8]) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
-    flate2::read::DeflateDecoder::new(&data[..])
+    flate2::read::DeflateDecoder::new(data)
         .read_to_end(&mut out)
         .map_err(|e| format!("zlib 해제 실패: {e}"))?;
     Ok(out)
@@ -142,11 +146,11 @@ fn visit_doc_info(
     for rec in records {
         match rec.tag {
             TAG_DOCUMENT_PROPERTIES => {
-                let mut r = ByteReader::new(&rec.data);
+                let mut r = ByteReader::new(rec.data);
                 *section_count = r.u16()?;
             }
             TAG_CHAR_SHAPE => {
-                let mut r = ByteReader::new(&rec.data);
+                let mut r = ByteReader::new(rec.data);
                 let mut font_ids = [0u16; 7];
                 for f in font_ids.iter_mut() {
                     *f = r.u16()?;
@@ -172,7 +176,7 @@ fn visit_doc_info(
                 });
             }
             TAG_BIN_DATA => {
-                let mut r = ByteReader::new(&rec.data);
+                let mut r = ByteReader::new(rec.data);
                 let _attr = r.u16()?;
                 // 임베딩 타입: id + 확장자. (링크 타입은 payload가 달라 실패해도 무시)
                 if let (Ok(id), Ok(ext)) = (r.u16(), r.string()) {
@@ -180,13 +184,13 @@ fn visit_doc_info(
                 }
             }
             TAG_FACE_NAME => {
-                let mut r = ByteReader::new(&rec.data);
+                let mut r = ByteReader::new(rec.data);
                 let _attr = r.u8()?;
                 let name = r.string()?;
                 info.font_faces.push(name);
             }
             TAG_BORDER_FILL => {
-                let mut r = ByteReader::new(&rec.data);
+                let mut r = ByteReader::new(rec.data);
                 r.u16()?; // attribute
                 // 왼·오른·위·아래 순. 종류·굵기는 표 인덱스다(hwp.js가 쓰는 것과 같은 표).
                 let mut sides = Vec::new();
@@ -200,7 +204,7 @@ fn visit_doc_info(
                 let border = Some(sides.iter().find_map(|&(kind, width, color)| {
                     Some(Border {
                         width_pt: BORDER_MM.get(width as usize).copied().unwrap_or(0.12) * 72.0 / 25.4,
-                        style: border_style(kind)?.to_string(),
+                        style: border_style(kind)?,
                         color: rgb(color),
                     })
                 }));
@@ -220,7 +224,7 @@ fn visit_doc_info(
                 // HWP5 PARA_SHAPE: 속성1(u32) · 왼쪽여백 · 오른쪽여백 · 들여쓰기 ·
                 // 문단간격 위 · 문단간격 아래 (전부 i32 HWPUNIT). 들여쓰기는 음수면 내어쓰기.
                 // 구버전은 뒤쪽이 잘려 있을 수 있어 없으면 0으로 둔다.
-                let mut r = ByteReader::new(&rec.data);
+                let mut r = ByteReader::new(rec.data);
                 let attr = r.u32()?;
                 let indent = r.i32().unwrap_or(0);
                 let _right = r.i32().unwrap_or(0);
@@ -303,8 +307,8 @@ fn parse_section(data: &[u8]) -> Result<Section, String> {
     Ok(section)
 }
 
-fn parse_paragraph(rec: &Record, section: &mut Section) -> Result<RawParagraph, String> {
-    let mut r = ByteReader::new(&rec.data);
+fn parse_paragraph(rec: &Record<'_>, section: &mut Section) -> Result<RawParagraph, String> {
+    let mut r = ByteReader::new(rec.data);
     r.skip(8)?; // text len(u32) + control mask(u32)
     let shape_index = r.u16()?;
 
@@ -320,9 +324,9 @@ fn parse_paragraph(rec: &Record, section: &mut Section) -> Result<RawParagraph, 
 
     for child in &rec.children {
         match child.tag {
-            TAG_PARA_TEXT => parse_para_text(&child.data, &mut para)?,
+            TAG_PARA_TEXT => parse_para_text(child.data, &mut para)?,
             TAG_PARA_CHAR_SHAPE => {
-                let mut cr = ByteReader::new(&child.data);
+                let mut cr = ByteReader::new(child.data);
                 while !cr.is_eof() {
                     let pos = cr.u32()?;
                     let id = cr.u32()?;
@@ -338,14 +342,14 @@ fn parse_paragraph(rec: &Record, section: &mut Section) -> Result<RawParagraph, 
 
 /// CTRL_HEADER 아래의 LIST_HEADER + 문단들 → 문단 목록.
 /// 각주·머리말·꼬리말이 모두 같은 모양이라 한 곳에서 읽는다.
-fn sublist_paragraphs(rec: &Record, section: &mut Section) -> Result<Vec<Paragraph>, String> {
+fn sublist_paragraphs(rec: &Record<'_>, section: &mut Section) -> Result<Vec<Paragraph>, String> {
     let mut children = rec.children.iter().peekable();
     let mut out = Vec::new();
     while let Some(child) = children.next() {
         if child.tag != TAG_LIST_HEADER {
             continue;
         }
-        let mut lr = ByteReader::new(&child.data);
+        let mut lr = ByteReader::new(child.data);
         let para_count = if child.data.len() == 30 {
             lr.u16()? as u32
         } else {
@@ -425,8 +429,12 @@ fn parse_para_text(data: &[u8], para: &mut RawParagraph) -> Result<(), String> {
     Ok(())
 }
 
-fn parse_ctrl(rec: &Record, para: &mut RawParagraph, section: &mut Section) -> Result<(), String> {
-    let mut r = ByteReader::new(&rec.data);
+fn parse_ctrl(
+    rec: &Record<'_>,
+    para: &mut RawParagraph,
+    section: &mut Section,
+) -> Result<(), String> {
+    let mut r = ByteReader::new(rec.data);
     let ctrl = r.u32()?;
 
     if ctrl == CTRL_TABLE {
@@ -443,7 +451,7 @@ fn parse_ctrl(rec: &Record, para: &mut RawParagraph, section: &mut Section) -> R
         let width = r.u32().unwrap_or(0);
         let height = r.u32().unwrap_or(0);
         if let Some(pic) = find_tag(rec, TAG_SHAPE_COMPONENT_PICTURE) {
-            let mut pr = ByteReader::new(&pic.data);
+            let mut pr = ByteReader::new(pic.data);
             // hwp.js visitPicture와 동일: 4*17+3 바이트 스킵 후 binID(u16, 1-based)
             if pr.skip(4 * 17 + 3).is_ok() {
                 if let Ok(bin_ref) = pr.u16() {
@@ -496,7 +504,7 @@ fn parse_ctrl(rec: &Record, para: &mut RawParagraph, section: &mut Section) -> R
     // 표/개체가 아닌 컨트롤(구역정의 secd, 단 정의 cold 등): PAGE_DEF만 흡수
     for child in &rec.children {
         if child.tag == TAG_PAGE_DEF {
-            let mut pr = ByteReader::new(&child.data);
+            let mut pr = ByteReader::new(child.data);
             section.width = pr.u32()?;
             section.height = pr.u32()?;
             section.padding_left = pr.u32()?;
@@ -510,7 +518,7 @@ fn parse_ctrl(rec: &Record, para: &mut RawParagraph, section: &mut Section) -> R
     Ok(())
 }
 
-fn find_tag<'a>(rec: &'a Record, tag: u16) -> Option<&'a Record> {
+fn find_tag<'a, 'b>(rec: &'a Record<'b>, tag: u16) -> Option<&'a Record<'b>> {
     for child in &rec.children {
         if child.tag == tag {
             return Some(child);
@@ -534,7 +542,7 @@ fn read_padding(r: &mut ByteReader, default: [u16; 4]) -> Result<[u16; 4], Strin
     Ok(out)
 }
 
-fn parse_table_ctrl(rec: &Record, section: &mut Section) -> Result<Table, String> {
+fn parse_table_ctrl(rec: &Record<'_>, section: &mut Section) -> Result<Table, String> {
     let mut table = Table::default();
     let mut children = rec.children.iter().peekable();
     // 표 기본 안쪽 여백 — 셀이 여백을 -1(미지정)로 두면 이 값을 상속한다
@@ -543,7 +551,7 @@ fn parse_table_ctrl(rec: &Record, section: &mut Section) -> Result<Table, String
     while let Some(child) = children.next() {
         match child.tag {
             TAG_TABLE => {
-                let mut r = ByteReader::new(&child.data);
+                let mut r = ByteReader::new(child.data);
                 r.u32()?; // table attribute
                 table.row_count = r.u16()?;
                 table.col_count = r.u16()?;
@@ -553,7 +561,7 @@ fn parse_table_ctrl(rec: &Record, section: &mut Section) -> Result<Table, String
                 // 이후 rowSize(2×rows) + borderFillID — 미사용
             }
             TAG_LIST_HEADER => {
-                let mut r = ByteReader::new(&child.data);
+                let mut r = ByteReader::new(child.data);
                 // NOTE(hwp.js): 문서 스펙은 i16이지만 실제로는 대부분 i32
                 let para_count = if child.data.len() == 30 {
                     r.u16()? as u32
@@ -624,47 +632,44 @@ fn parse_table_ctrl(rec: &Record, section: &mut Section) -> Result<Table, String
 /// chars + shape_pointers → 같은 글자모양 구간(run)으로 다이제스트
 fn digest(raw: RawParagraph) -> Paragraph {
     let mut runs: Vec<Run> = Vec::new();
-    let mut pointers = raw.shape_pointers.clone();
+    let mut pointers = raw.shape_pointers;
     pointers.sort_by_key(|p| p.0);
 
-    let shape_at = |wpos: u32| -> u32 {
-        let mut id = pointers.first().map(|p| p.1).unwrap_or(0);
-        for &(pos, sid) in &pointers {
-            if pos <= wpos {
-                id = sid;
-            } else {
-                break;
-            }
-        }
-        id
-    };
+    // chars도 pointers도 위치 오름차순이다 — 커서 하나로 함께 훑는다.
+    // (예전에는 글자마다 pointers를 앞에서부터 다시 훑어 O(글자수 × 포인터수)였다.)
+    let mut pi = 0usize;
+    let mut shape = pointers.first().map(|p| p.1).unwrap_or(0);
 
     let mut page_fields = raw.page_fields;
     for (wpos, item) in &raw.chars {
+        while pi < pointers.len() && pointers[pi].0 <= *wpos {
+            shape = pointers[pi].1;
+            pi += 1;
+        }
         // 컨트롤 문자 18 = 자동 번호. 그 자리에 쪽번호 필드 런을 넣는다 —
         // 번호 자체는 파일에 없다(렌더가 센다).
         if matches!(item, CharItem::Extended(18)) && page_fields > 0 {
             page_fields -= 1;
             runs.push(Run {
-                char_shape_id: shape_at(*wpos),
+                char_shape_id: shape,
                 text: String::new(),
                 link: None,
-                field: Some("page".to_string()),
+                field: Some("page"),
             });
             continue;
         }
-        let piece = match item {
-            CharItem::Text(c) => c.to_string(),
-            CharItem::LineBreak => "\n".to_string(),
-            CharItem::Tab => "\t".to_string(),
+        // 글자마다 String을 만들지 않고 바로 밀어 넣는다
+        let ch = match item {
+            CharItem::Text(c) => *c,
+            CharItem::LineBreak => '\n',
+            CharItem::Tab => '\t',
             CharItem::Extended(_) => continue,
         };
-        let shape = shape_at(*wpos);
         match runs.last_mut() {
-            Some(last) if last.char_shape_id == shape => last.text.push_str(&piece),
+            Some(last) if last.char_shape_id == shape => last.text.push(ch),
             _ => runs.push(Run {
                 char_shape_id: shape,
-                text: piece,
+                text: ch.to_string(),
                 link: None,
                 field: None,
             }),

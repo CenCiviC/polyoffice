@@ -97,7 +97,7 @@ struct StyleDef {
     background: Option<[u8; 3]>,
     /// 셀 테두리 — `Some(None)`이 "테두리 없음"이다 (미지정과 구별한다)
     border: Option<Option<Border>>,
-    vert_align: Option<String>,
+    vert_align: Option<&'static str>,
     padding: [Option<u16>; 4],
     column_width: Option<u32>,
 }
@@ -191,8 +191,12 @@ fn read_style(st: Xml) -> StyleDef {
         border: cp.and_then(|n| attr(n, "border")).map(read_border),
         vert_align: cp
             .and_then(|n| attr(n, "vertical-align"))
-            .filter(|v| matches!(*v, "top" | "middle" | "bottom"))
-            .map(str::to_string),
+            .and_then(|v| match v {
+                "top" => Some("top"),
+                "middle" => Some("middle"),
+                "bottom" => Some("bottom"),
+                _ => None,
+            }),
         padding,
         column_width: colp.and_then(|n| attr(n, "column-width")).and_then(length),
     }
@@ -212,7 +216,7 @@ fn read_border(v: &str) -> Option<Border> {
     let width_pt = lower
         .split_whitespace()
         .filter(|t| !t.starts_with('#'))
-        .find_map(|t| length(t))
+        .find_map(length)
         .map(|hwp| hwp as f32 / 100.0)
         .unwrap_or(0.75);
     let color = lower
@@ -222,7 +226,7 @@ fn read_border(v: &str) -> Option<Border> {
         .unwrap_or([0, 0, 0]);
     Some(Border {
         width_pt,
-        style: style.to_string(),
+        style,
         color,
     })
 }
@@ -230,6 +234,11 @@ fn read_border(v: &str) -> Option<Border> {
 #[derive(Default)]
 struct Styles {
     defs: HashMap<String, StyleDef>,
+    /// style-name → parent 체인까지 적용한 결과. 참조는 문단·span·셀·열마다 일어나는데
+    /// 정의는 수십 개뿐이라 bake()에서 한 번 계산해 두고 그 뒤엔 조회만 한다.
+    resolved: HashMap<String, StyleDef>,
+    /// 이름이 없거나 모르는 스타일일 때 돌려줄 빈 정의
+    empty: StyleDef,
     default_text: TextFmt,
 }
 
@@ -254,14 +263,28 @@ impl Styles {
         }
     }
 
-    fn resolve(&self, name: Option<&str>, depth: u8) -> StyleDef {
+    /// 정의를 다 모은 뒤 한 번 부른다 — 이 뒤로 resolve()는 조회만 한다.
+    fn bake(&mut self) {
+        let names: Vec<String> = self.defs.keys().cloned().collect();
+        for name in names {
+            let r = self.walk(Some(&name), 0);
+            self.resolved.insert(name, r);
+        }
+    }
+
+    /// 미리 계산해 둔 결과를 빌려준다 (parent 체인을 다시 걷지 않는다).
+    fn resolve(&self, name: Option<&str>) -> &StyleDef {
+        name.and_then(|n| self.resolved.get(n)).unwrap_or(&self.empty)
+    }
+
+    fn walk(&self, name: Option<&str>, depth: u8) -> StyleDef {
         let Some(def) = name.and_then(|n| self.defs.get(n)) else {
             return StyleDef::default();
         };
         if depth > 12 {
             return def.clone();
         }
-        let mut out = self.resolve(def.parent.as_deref(), depth + 1);
+        let mut out = self.walk(def.parent.as_deref(), depth + 1);
         out.text.overlay(&def.text);
         if def.align.is_some() {
             out.align = def.align;
@@ -275,10 +298,10 @@ impl Styles {
             out.background = def.background;
         }
         if def.border.is_some() {
-            out.border = def.border.clone();
+            out.border = def.border;
         }
         if def.vert_align.is_some() {
-            out.vert_align = def.vert_align.clone();
+            out.vert_align = def.vert_align;
         }
         for (slot, v) in out.padding.iter_mut().zip(def.padding) {
             if v.is_some() {
@@ -338,6 +361,7 @@ pub fn parse_odt_document(data: &[u8]) -> Result<DocModel, String> {
         styles.collect(sd);
     }
     styles.collect(&content);
+    styles.bake();
 
     let mut section = Section::default();
     read_page_layout(styles_doc.as_ref(), &mut section);
@@ -478,7 +502,7 @@ impl Ctx<'_, '_> {
     }
 
     fn paragraph(&mut self, p: Xml) -> Paragraph {
-        let style = self.styles.resolve(attr(p, "style-name"), 0);
+        let style = self.styles.resolve(attr(p, "style-name"));
         let mut fmt = self.styles.default_text.clone();
         fmt.overlay(&style.text);
 
@@ -531,7 +555,7 @@ impl Ctx<'_, '_> {
             match c.tag_name().name() {
                 "span" => {
                     let mut inner = fmt.clone();
-                    inner.overlay(&self.styles.resolve(attr(c, "style-name"), 0).text);
+                    inner.overlay(&self.styles.resolve(attr(c, "style-name")).text);
                     self.inline(c, &inner, para, link);
                 }
                 "a" => {
@@ -545,9 +569,7 @@ impl Ctx<'_, '_> {
                     char_shape_id: 0,
                     text: String::new(),
                     link: None,
-                    field: Some(
-                        if node.tag_name().name() == "page-count" { "pages" } else { "page" }.to_string(),
-                    ),
+                    field: Some(if node.tag_name().name() == "page-count" { "pages" } else { "page" }),
                 }),
                 "s" => {
                     let n: usize = attr(c, "c").and_then(|v| v.parse().ok()).unwrap_or(1);
@@ -652,7 +674,7 @@ impl Ctx<'_, '_> {
         for col in children(tbl, "table-column") {
             let w = self
                 .styles
-                .resolve(attr(col, "style-name"), 0)
+                .resolve(attr(col, "style-name"))
                 .column_width
                 .unwrap_or(0);
             let repeat: usize = attr(col, "number-columns-repeated")
@@ -685,7 +707,7 @@ impl Ctx<'_, '_> {
                     attr(tc, n).and_then(|v| v.parse().ok()).unwrap_or(1).max(1)
                 };
                 let col_span = span("number-columns-spanned");
-                let style = self.styles.resolve(attr(tc, "style-name"), 0);
+                let style = self.styles.resolve(attr(tc, "style-name"));
                 let from = gcol as usize;
                 let to = (from + col_span as usize).min(widths.len());
 
@@ -702,8 +724,8 @@ impl Ctx<'_, '_> {
                         style.padding[2].unwrap_or(0),
                         style.padding[3].unwrap_or(0),
                     ],
-                    border_fill_id: Some(self.intern.fill_border(style.background, style.border.clone())),
-                    vert_align: style.vert_align.clone(),
+                    border_fill_id: Some(self.intern.fill_border(style.background, style.border)),
+                    vert_align: style.vert_align,
                     paragraphs: self.blocks(tc),
                 });
                 gcol += col_span;

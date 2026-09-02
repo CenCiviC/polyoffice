@@ -64,7 +64,7 @@ pub fn sniff_format(data: &[u8]) -> Result<Format, String> {
     }
     if data.starts_with(&[0xD0, 0xCF, 0x11, 0xE0]) {
         // CFB(OLE) 컨테이너: hwp는 FileHeader, Word 97-2003은 WordDocument 스트림을 갖는다
-        let cursor = std::io::Cursor::new(data.to_vec());
+        let cursor = std::io::Cursor::new(data);
         if let Ok(cfb) = cfb::CompoundFile::open(cursor) {
             if cfb.exists("/WordDocument") {
                 return Ok(Format::Doc);

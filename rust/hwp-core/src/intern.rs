@@ -10,6 +10,13 @@ use base64::Engine as _;
 
 use crate::model::{BinData, Border, BorderFill, CharShape, DocInfo, ParaHead, ParaMargins, ParaShape};
 
+/// border_fills 인터너 키. f32는 Hash가 없어 비트로 바꿔 담는다
+/// (같은 값이면 같은 비트라 등가성이 유지된다).
+type BorderKey = (
+    Option<[u8; 3]>,
+    Option<Option<(u32, &'static str, [u8; 3])>>,
+);
+
 /// 글꼴 미지정. fontFaces 범위 밖이라 방출기가 font-family를 넣지 않는다.
 pub const NO_FONT: u16 = u16::MAX;
 
@@ -19,7 +26,7 @@ pub struct Interner {
     fonts: HashMap<String, u16>,
     shapes: HashMap<(i32, [u8; 3], u32, u16), u32>,
     paras: HashMap<(u8, ParaMargins, ParaHead), u16>,
-    border_keys: HashMap<String, u16>,
+    border_keys: HashMap<BorderKey, u16>,
     bins: HashMap<String, u16>,
 }
 
@@ -89,19 +96,11 @@ impl Interner {
         id
     }
 
-    pub fn fill(&mut self, color: [u8; 3]) -> u16 {
-        self.fill_border(Some(color), None)
-    }
-
     /// 배경 + 테두리. IR은 셀마다 둘을 함께 들고 다니므로 하나로 묶어 등록한다.
     pub fn fill_border(&mut self, color: Option<[u8; 3]>, border: Option<Option<Border>>) -> u16 {
-        let key = format!(
-            "{color:?}|{}",
-            match border.as_ref() {
-                None => "-".to_string(),
-                Some(None) => "none".to_string(),
-                Some(Some(b)) => format!("{:.2}:{}:{:?}", b.width_pt, b.style, b.color),
-            }
+        let key: BorderKey = (
+            color,
+            border.map(|side| side.map(|b| (b.width_pt.to_bits(), b.style, b.color))),
         );
         if let Some(&id) = self.border_keys.get(&key) {
             return id;
