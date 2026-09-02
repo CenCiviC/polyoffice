@@ -18,7 +18,7 @@ const CHROME =
   process.env.CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 const DOC = process.argv[2] ?? 'samples/hwpx/moef_2026세제개편안_보도자료.hwpx'
 const OUT = process.argv[3] ?? 'shots'
-const URL = process.env.NARRO_URL ?? 'http://localhost:5173/'
+const URL = process.env.POLYOFFICE_URL ?? 'http://localhost:5173/'
 
 mkdirSync(OUT, { recursive: true })
 

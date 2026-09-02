@@ -1,8 +1,8 @@
 # IR 작성 가이드 (생성하는 쪽을 위한 요약)
 
 [IR-SPEC.md](IR-SPEC.md)가 **설계 문서**라면 이건 **작성 설명서**다. MCP 도구
-`narro_guide`가 이 파일을 그대로 돌려준다. 문서를 새로 만들려면 이 어휘로 HTML을
-쓴 다음 `narro_write`에 넘기면 된다 — hwpx·docx·odt가 나오고, 로컬 편집기 링크가 온다.
+`polyoffice_guide`가 이 파일을 그대로 돌려준다. 문서를 새로 만들려면 이 어휘로 HTML을
+쓴 다음 `polyoffice_write`에 넘기면 된다 — hwpx·docx·odt가 나오고, 로컬 편집기 링크가 온다.
 
 ## 뼈대
 
@@ -128,6 +128,6 @@
 
 ## 기존 문서 고치기
 
-`narro_read`가 `.hwp`·`.doc`·`.hwpx`·`.docx`·`.odt`를 이 어휘의 HTML로 돌려준다.
-받은 HTML에서 **고칠 블록만 바꿔** 다시 `narro_write`에 넘기면 된다. `data-id`는
+`polyoffice_read`가 `.hwp`·`.doc`·`.hwpx`·`.docx`·`.odt`를 이 어휘의 HTML로 돌려준다.
+받은 HTML에서 **고칠 블록만 바꿔** 다시 `polyoffice_write`에 넘기면 된다. `data-id`는
 그대로 두는 게 원칙이다.

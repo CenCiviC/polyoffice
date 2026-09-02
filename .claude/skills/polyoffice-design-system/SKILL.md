@@ -1,13 +1,13 @@
 ---
-name: narro-design-system
+name: polyoffice-design-system
 description: >
-  Narro 디자인 시스템 — 이 프로젝트의 모든 UI(앱바, 서식 툴바, 캔버스, 빈 상태, 버튼,
+  PolyOffice 디자인 시스템 — 이 프로젝트의 모든 UI(앱바, 서식 툴바, 캔버스, 빈 상태, 버튼,
   입력, 배지 등)를 만들거나 고칠 때의 단일 진실원. DearDent EMR 디자인 시스템("고요한 정밀함
   / Quiet Precision, Linear-refined")을 이식한 것. 아이덴티티 키워드, Hard Laws, 색/타이포/
   간격 토큰, role→token 해석 레이어를 담는다. UI용 CSS를 쓰기 전에 반드시 먼저 읽는다.
 ---
 
-# Narro Design System
+# PolyOffice Design System
 
 **개념: 고요한 정밀함 / Quiet Precision, Linear-refined** — "UI가 아니라 문서를 보게 한다."
 크롬은 뒤로 물러나고 문서 콘텐츠가 주인공. 조용함은 **타이포그래피로** 만들지,
@@ -38,7 +38,7 @@ description: >
 
 ## Tokens (`src/index.css`의 CSS 변수가 구현체 — 이 문서와 항상 동기화)
 
-### Brand — Linear Indigo (narro 로고와 동일 계열), 절제해서 사용
+### Brand — Linear Indigo (polyoffice 로고와 동일 계열), 절제해서 사용
 **PRIMARY ACTION = brand-600 `#5E6AD2`**, hover = brand-700 `#4F5ABF`.
 크롬(툴바·탭·선택 상태)은 **무채색 유지** — 액센트는 진짜 CTA(.hwpx 저장), 포커스 링,
 진짜 강조에만. `brand-50 #F4F5FC · 100 #E8EAF9 · 600 #5E6AD2 · 700 #4F5ABF`.
@@ -100,9 +100,9 @@ description: >
 - **에러 배너** = danger-soft 배경 + danger 텍스트 + md radius, elevation 없음.
 
 ## 브랜드 자산
-- 앱 로고: `public/icons/narro-logo-*.png`, `narro_logo.svg` (narro 프로젝트에서 이식).
+- 앱 로고: `public/icons/polyoffice-logo-*.png`, `polyoffice_logo.svg` (polyoffice 프로젝트에서 이식).
   로고 인디고가 brand-600과 동일 계열 — 로고 옆 워드마크는 ink, 무게 700, 자간 -0.02em.
-- 파비콘: `/icons/narro-logo-32.png`.
+- 파비콘: `/icons/polyoffice-logo-32.png`.
 
 ## 적용 절차 (화면 통일할 때)
 1. 각 요소의 역할 식별 → 위 Role→Token에서 토큰 찾기.

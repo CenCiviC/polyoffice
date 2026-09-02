@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { convertHWP, convertModel, wrapStandalone, type ConvertResult } from './lib/narro'
+import { convertHWP, convertModel, wrapStandalone, type ConvertResult } from './lib/polyoffice'
 import { html2hwpx } from './lib/html2hwpx'
 import { html2docx } from './lib/html2docx'
 import { html2odt } from './lib/html2odt'
@@ -363,6 +363,21 @@ export default function App() {
   // 이 기기에 실제로 설치된 글꼴만 고를 수 있게 한다 — 없는 글꼴을 고르면 화면에선 대체되고
   // docx·hwpx로 저장했을 때 받는 쪽에서 또 다른 글꼴로 대체돼 조판이 어긋난다.
   const [fonts, setFonts] = useState<string[]>([])
+
+  // MCP가 polyoffice_open으로 띄웠으면 URL에 저장 토큰이 실려 온다. 있으면 저장 버튼이
+  // 브라우저 다운로드가 아니라 원본이 있던 폴더로 되쓴다(/__polyoffice/save).
+  const [saveToken] = useState<string | null>(
+    () => new URLSearchParams(window.location.search).get('save'),
+  )
+  const [saveMsg, setSaveMsg] = useState('')
+  const [saving, setSaving] = useState(false)
+  // 제자리 덮어쓰기는 원본과 같은 확장자로 쓸 수 있을 때만 성립한다 —
+  // .hwp·.doc는 쓰기 백엔드가 없어 아무리 눌러도 사본이 된다(버튼을 아예 안 보인다).
+  const inPlaceExt = (fileName.match(/\.(hwpx|docx|odt)$/i)?.[1].toLowerCase() ?? null) as
+    | 'hwpx'
+    | 'docx'
+    | 'odt'
+    | null
   const inputRef = useRef<HTMLInputElement>(null)
   const imageInputRef = useRef<HTMLInputElement>(null)
   const previewRef = useRef<HTMLIFrameElement>(null)
@@ -1395,6 +1410,40 @@ export default function App() {
     URL.revokeObjectURL(a.href)
   }
 
+  /**
+   * 편집 결과를 원본이 있던 폴더로 되쓴다 — polyoffice_open으로 연 문서에서만 된다.
+   * 어디에 쓸지는 이쪽이 정하지 않는다. 토큰이 서버에서 원본 경로를 가리키고 있어서,
+   * 경로를 본문에 실으면 아무 파일이나 덮어쓰는 구멍이 되기 때문이다.
+   */
+  const saveToServer = useCallback(
+    async (bytes: BlobPart, ext: '.hwpx' | '.docx' | '.odt' | '.html', overwrite = false) => {
+      if (!saveToken) return
+      setSaving(true)
+      setSaveMsg('')
+      try {
+        const res = await fetch('/__polyoffice/save', {
+          method: 'PUT',
+          headers: {
+            'x-polyoffice-token': saveToken,
+            'x-polyoffice-ext': ext,
+            ...(overwrite ? { 'x-polyoffice-overwrite': '1' } : {}),
+          },
+          body: new Blob([bytes]),
+        })
+        const body = (await res.json()) as { path?: string; error?: string; note?: string | null }
+        if (!res.ok) throw new Error(body.error ?? `${res.status}`)
+        setSaveMsg(`저장됨 → ${body.path}${body.note ? ` (${body.note})` : ''}`)
+        setEdited(false)
+        setTimeout(() => setSaveMsg(''), 6000)
+      } catch (e) {
+        setError(`저장 실패: ${e instanceof Error ? e.message : String(e)}`)
+      } finally {
+        setSaving(false)
+      }
+    },
+    [saveToken],
+  )
+
   const download = useCallback(() => {
     const current = commitEdits()
     if (!current) return
@@ -1404,30 +1453,35 @@ export default function App() {
     )
   }, [commitEdits, fileName])
 
-  const downloadHwpx = useCallback(async () => {
-    const current = commitEdits()
-    if (!current) return
-    try {
-      const template = new Uint8Array(await (await fetch('/blank.hwpx')).arrayBuffer())
-      const dom = new DOMParser().parseFromString(current.body, 'text/html')
-      const { data } = html2hwpx(dom.body, template)
-      downloadBlob(
-        new Blob([data as BlobPart], { type: 'application/hwp+zip' }),
-        fileName.replace(/\.(hwpx?|docx?|odt)$/i, '.hwpx'),
-      )
-    } catch (e) {
-      setError(`hwpx 변환 실패: ${e instanceof Error ? e.message : String(e)}`)
-    }
-  }, [commitEdits, fileName])
+  const downloadHwpx = useCallback(
+    async (overwrite = false) => {
+      const current = commitEdits()
+      if (!current) return
+      try {
+        const template = new Uint8Array(await (await fetch('/blank.hwpx')).arrayBuffer())
+        const dom = new DOMParser().parseFromString(current.body, 'text/html')
+        const { data } = html2hwpx(dom.body, template)
+        if (saveToken) return await saveToServer(data as BlobPart, '.hwpx', overwrite)
+        downloadBlob(
+          new Blob([data as BlobPart], { type: 'application/hwp+zip' }),
+          fileName.replace(/\.(hwpx?|docx?|odt)$/i, '.hwpx'),
+        )
+      } catch (e) {
+        setError(`hwpx 변환 실패: ${e instanceof Error ? e.message : String(e)}`)
+      }
+    },
+    [commitEdits, fileName, saveToken, saveToServer],
+  )
 
   /** 편집 결과 IR을 다른 포맷으로 저장 — 백엔드만 갈아끼운다 */
   const downloadAs = useCallback(
-    (ext: 'docx' | 'odt') => {
+    async (ext: 'docx' | 'odt', overwrite = false) => {
       const current = commitEdits()
       if (!current) return
       try {
         const dom = new DOMParser().parseFromString(current.body, 'text/html')
         const { data } = ext === 'docx' ? html2docx(dom.body) : html2odt(dom.body)
+        if (saveToken) return await saveToServer(data as BlobPart, `.${ext}`, overwrite)
         const mime =
           ext === 'docx'
             ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
@@ -1440,7 +1494,7 @@ export default function App() {
         setError(`${ext} 변환 실패: ${e instanceof Error ? e.message : String(e)}`)
       }
     },
-    [commitEdits, fileName],
+    [commitEdits, fileName, saveToken, saveToServer],
   )
 
   const printDoc = useCallback(() => {
@@ -1453,8 +1507,8 @@ export default function App() {
     <div className="shell">
       <header className="appbar">
         <span className="brand">
-          <img src="/icons/narro-logo-48.png" alt="" />
-          Narro
+          <img src="/icons/polyoffice-logo-48.png" alt="" />
+          PolyOffice
         </span>
         <span className="docname">
           {fileName || '문서를 열어주세요'}
@@ -1505,15 +1559,49 @@ export default function App() {
                 {Icon.downloadHtml}
               </button>
               <span className="appbar-sep" />
-              <button className="save-alt" title="Word 문서로 저장" onClick={() => downloadAs('docx')}>
+              <button
+                className="save-alt"
+                title={saveToken ? '원본 폴더에 .docx로 저장' : 'Word 문서로 저장'}
+                disabled={saving}
+                onClick={() => void downloadAs('docx')}
+              >
                 docx
               </button>
-              <button className="save-alt" title="오픈오피스 문서로 저장" onClick={() => downloadAs('odt')}>
+              <button
+                className="save-alt"
+                title={saveToken ? '원본 폴더에 .odt로 저장' : '오픈오피스 문서로 저장'}
+                disabled={saving}
+                onClick={() => void downloadAs('odt')}
+              >
                 odt
               </button>
-              <button className="primary" onClick={() => void downloadHwpx()}>
-                .hwpx 저장
+              <button
+                className="primary"
+                disabled={saving}
+                title={saveToken ? '원본 폴더에 .edited.hwpx로 저장' : undefined}
+                onClick={() => void downloadHwpx()}
+              >
+                {saving ? '저장 중…' : saveToken ? '원본 폴더에 저장' : '.hwpx 저장'}
               </button>
+              {/* 덮어쓰기는 따로 둔다 — IR은 손실 변환이라 원본을 지우면 되돌릴 수 없다.
+                  원본과 같은 확장자로 쓸 수 있을 때만 보인다 */}
+              {saveToken && inPlaceExt && (
+                <button
+                  className="save-alt"
+                  disabled={saving}
+                  title={`원본 ${fileName}을(를) 덮어씁니다 — 되돌릴 수 없습니다`}
+                  onClick={() => {
+                    if (
+                      confirm(
+                        `원본 ${fileName}을(를) 덮어씁니다.\n\nIR로 변환하며 표현하지 못한 서식은 사라집니다. 되돌릴 수 없습니다. 계속할까요?`,
+                      )
+                    )
+                      void (inPlaceExt === 'hwpx' ? downloadHwpx(true) : downloadAs(inPlaceExt, true))
+                  }}
+                >
+                  덮어쓰기
+                </button>
+              )}
             </>
           )}
         </div>
@@ -1829,6 +1917,7 @@ export default function App() {
       )}
 
       {error && <div className="error">{error}</div>}
+      {saveMsg && <div className="saved">{saveMsg}</div>}
 
       <main
         className={`canvas${dragging ? ' dragging' : ''}`}
@@ -1863,7 +1952,7 @@ export default function App() {
 
         {!result ? (
           <div className="empty" onClick={() => inputRef.current?.click()} role="button" tabIndex={0}>
-            <img src="/icons/narro-logo-180.png" alt="" />
+            <img src="/icons/polyoffice-logo-180.png" alt="" />
             <b>한글 문서를 브라우저에서</b>
             <span>한글·워드·오픈오피스 문서를 끌어다 놓거나 클릭해서 열기 — 열고, 고치고, .hwpx로 저장</span>
             <span className="hint">

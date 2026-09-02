@@ -59,11 +59,11 @@ run 스타일 충실도가 더 높다 (예: 양식 안내문의 빨간 기울임
 
 ## 디자인 시스템
 
-UI 크롬은 **Narro Design System**("고요한 정밀함 / Quiet Precision, Linear-refined" —
+UI 크롬은 **PolyOffice Design System**("고요한 정밀함 / Quiet Precision, Linear-refined" —
 DearDent EMR DS 이식)을 따른다. **UI를 만들거나 고치기 전에
-`.claude/skills/narro-design-system/SKILL.md`를 먼저 읽을 것.** 토큰 구현체는
+`.claude/skills/polyoffice-design-system/SKILL.md`를 먼저 읽을 것.** 토큰 구현체는
 `src/index.css`(3-tier: primitives → semantic aliases → components), 브랜드 자산은
-`public/icons/`(narro 로고). 변환된 문서 콘텐츠(doc-section 내부)는 DS 적용 대상이 아니다
+`public/icons/`(polyoffice 로고). 변환된 문서 콘텐츠(doc-section 내부)는 DS 적용 대상이 아니다
 — 원본 충실도 우선.
 
 ## 실행
@@ -92,6 +92,7 @@ bun run golden-sim                  # 한글이 저장한 골든과 대조 — �
 bun run samples-sim                 # samples/ir 전수 — 어떤 문서에나 성립해야 하는 불변식
 bun run mcp                         # MCP 서버 (stdio) — 프롬프트에서 문서 만들기
 bun run mcp-sim                     # MCP 왕복 검증 (도구 5종 + dev 서버 + 편집기 링크)
+bun run open-sim                    # 열기→편집→원본 자리로 되쓰기 왕복 검증 (토큰·덮어쓰기 규칙)
 bun run shots [문서] [출력]          # 진짜 Chrome에 편집기를 띄워 화면 캡처 (dev 서버 먼저)
 bun run compare <input.hwp>         # Rust WASM vs hwp.js 파서 골든 비교
 bun run wasm:build                  # Rust 파서 재빌드 (rust/hwp-core 수정 후)
@@ -111,17 +112,17 @@ python3 scripts/make-office-fixtures.py rust/hwp-core/tests/fixtures
 
 | 도구 | 하는 일 |
 |---|---|
-| `narro_guide` | IR 어휘 설명서([IR-AUTHORING.md](docs/IR-AUTHORING.md))를 돌려준다. 문서를 쓰기 전에 먼저 부른다 |
-| `narro_write` | IR HTML → hwpx·docx·odt + 편집기 링크. 만든 파일을 곧바로 되읽어 텍스트를 대조한다 |
-| `narro_read` | 기존 hwp·doc·hwpx·docx·odt → IR HTML. 고쳐서 다시 `narro_write`에 넣으면 편집 |
-| `narro_open` | 이미 있는 문서를 편집기로 열기 |
-| `narro_viewer` | 로컬 dev 서버 상태·시작·정지 |
+| `polyoffice_guide` | IR 어휘 설명서([IR-AUTHORING.md](docs/IR-AUTHORING.md))를 돌려준다. 문서를 쓰기 전에 먼저 부른다 |
+| `polyoffice_write` | IR HTML → hwpx·docx·odt + 편집기 링크. 만든 파일을 곧바로 되읽어 텍스트를 대조한다 |
+| `polyoffice_read` | 기존 hwp·doc·hwpx·docx·odt → IR HTML. 고쳐서 다시 `polyoffice_write`에 넣으면 편집 |
+| `polyoffice_open` | 이미 있는 문서를 편집기로 열기 — 고쳐서 **원본 폴더에 되쓴다** |
+| `polyoffice_viewer` | 로컬 dev 서버 상태·시작·정지 |
 
 **어려운 건 파일 만들기가 아니라 IR 어휘로 정확히 쓰는 일**이라, 설명서를 툴 description에
-욱여넣는 대신 `narro_guide`라는 도구로 분리했다. 스키마는 가볍게 유지되고, 필요할 때만
+욱여넣는 대신 `polyoffice_guide`라는 도구로 분리했다. 스키마는 가볍게 유지되고, 필요할 때만
 컨텍스트를 쓴다.
 
-`narro_write`가 어휘를 벗어난 HTML을 받으면 파일을 만들지 않고 **위반 목록을 오류로**
+`polyoffice_write`가 어휘를 벗어난 HTML을 받으면 파일을 만들지 않고 **위반 목록을 오류로**
 돌려준다(`validateIR`의 규칙 이름·경로 그대로). 부르는 쪽이 고쳐서 다시 부르면 된다.
 
 ### 붙이기
@@ -132,14 +133,43 @@ Claude Code는 레포의 `.mcp.json`을 그대로 읽는다 — 프로젝트를 
 ```json
 {
   "mcpServers": {
-    "narro": { "command": "bun", "args": ["run", "/절대경로/polyoffice/mcp/server.ts"] }
+    "polyoffice": { "command": "bun", "args": ["run", "/절대경로/polyoffice/mcp/server.ts"] }
   }
 }
 ```
 
+### 남의 문서를 열어 사람이 고치기
+
+`polyoffice_open ~/보고서.docx` 하면 편집기가 뜨고, **저장하면 원본이 있던 폴더로 돌아간다.**
+
+```
+polyoffice_open ~/보고서.docx
+  → localhost:5173/?doc=/scratch/…&save=<토큰>
+  → (사람이 화면에서 고침)
+  → [원본 폴더에 저장] → ~/보고서.edited.docx
+```
+
+**문서 내용이 대화로 오가지 않는 게 요점**이다. `polyoffice_read`는 문서 전체를 IR HTML로
+돌려주므로 200KB 문서면 그만큼 컨텍스트를 태우고, 고칠 때마다 다시 태운다. 사람이 손으로
+고칠 것이면 `polyoffice_open`이 맞다 — LLM은 "열어줘"까지만 하고 빠진다.
+
+되쓰기는 dev 서버의 `PUT /__polyoffice/save`(`mcp/save-plugin.ts`)가 받는다. **어디에 쓸지는
+요청이 정하지 않는다** — `polyoffice_open`이 발급한 토큰(`mcp/session.ts`)이 원본 경로를 들고
+있고, 미들웨어는 그 경로에만 쓴다. 경로를 본문에서 받으면 localhost에 뜬 아무 탭이나
+fetch 한 번으로 파일을 덮어쓸 수 있기 때문이다. 토큰은 24시간 뒤 만료된다.
+
+| 규칙 | 왜 |
+|---|---|
+| 기본은 **사본**(`이름.edited.확장자`) | IR은 손실 변환이다 — 표현 못 한 서식은 저장하며 사라진다. 원본을 지우는 게 기본값이면 안 된다 |
+| 덮어쓰기는 **원본과 같은 확장자일 때만** | `.hwp`를 열어 덮어쓰기를 눌러도 쓸 수 있는 건 `.hwpx`뿐이라, 원본은 남고 파일만 하나 더 는다. 그런 경우는 조용히 사본으로 되돌린다 |
+| `.hwp`·`.doc`는 `.hwpx`·`.docx`로 | 쓰기 백엔드가 없다. 응답이 왜 확장자가 바뀌었는지 알려준다 |
+
+`bun run open-sim`이 이 규칙 전부와 토큰 없는 요청이 403인지를 헤드리스로 확인한다.
+미들웨어는 `apply: 'serve'`라 `vite build` 산출물에는 들어가지 않는다.
+
 ### 뷰어
 
-`narro_write`는 결과를 `public/scratch/<이름>/`에 놓고 `localhost:5173/?doc=/scratch/…`를
+`polyoffice_write`는 결과를 `public/scratch/<이름>/`에 놓고 `localhost:5173/?doc=/scratch/…`를
 돌려준다. dev 서버가 이미 떠 있으면 붙고, 없으면 띄운다(우리가 띄운 것만 우리가 끈다).
 `public/` 밑에 두는 이유는 `App.tsx`의 `?doc=`이 `fetch`라 `file://`로는 안 열리고
 http 오리진이 필요하기 때문이다. `out_dir`을 주면 원하는 폴더에 사본도 남긴다.
@@ -309,7 +339,7 @@ src/lib/model.ts      # 문서 모델 계약 (Rust model.rs와 1:1 — 항상 �
 src/lib/parser-wasm.ts# WASM 파서 로더 (브라우저 url / CLI bytes 초기화)
 src/lib/parser-js.ts  # hwp.js 폴백 — 같은 문서 모델로 정규화
 src/lib/ir.ts         # 스펙의 실행 가능한 형태: IR_VERSION + validateIR() 린터
-src/lib/narro.ts      # 방출기: 문서 모델 → IR HTML { body, standalone, stats }
+src/lib/polyoffice.ts      # 방출기: 문서 모델 → IR HTML { body, standalone, stats }
 src/lib/ir-model.ts   # IR HTML → 중립 문서 트리 (쓰기 백엔드 공용)
 src/lib/html2hwpx.ts  # 쓰기: IR HTML → hwpx (템플릿+주입, fflate)
 src/lib/html2docx.ts  # 쓰기: IR → docx (OOXML 패키지 생성)
@@ -333,9 +363,12 @@ scripts/headerfooter-sim.ts # CLI — 머리말·꼬리말·쪽번호 (본문 �
 scripts/reread-sim.ts # CLI — 읽기 대칭 (IR → 파일 → 다시 IR, 세 포맷)
 scripts/shots.ts      # CLI — 설치된 Chrome으로 편집기 화면 캡처 (눈으로 보는 검증)
 scripts/mcp-sim.ts    # CLI — 진짜 MCP 클라이언트로 서버 왕복 (도구 5종 + 편집기 링크)
-mcp/server.ts         # MCP(stdio) — narro_guide·write·read·open·viewer
+scripts/open-sim.ts   # CLI — 열기→되쓰기 왕복 + 토큰 거부·덮어쓰기 규칙
+mcp/server.ts         # MCP(stdio) — polyoffice_guide·write·read·open·viewer
 mcp/viewer.ts         # 로컬 dev 서버 찾기/띄우기 + public/scratch 발행
-docs/IR-AUTHORING.md  # 생성하는 쪽을 위한 IR 작성 설명서 (narro_guide가 그대로 돌려준다)
+mcp/session.ts        # 저장 토큰 — MCP(여는 쪽)와 vite 미들웨어(쓰는 쪽)가 공유하는 브로커
+mcp/save-plugin.ts    # vite dev 미들웨어 — PUT /__polyoffice/save, 편집 결과를 원본 자리로
+docs/IR-AUTHORING.md  # 생성하는 쪽을 위한 IR 작성 설명서 (polyoffice_guide가 그대로 돌려준다)
 scripts/probe*.ts     # hwp.js 파싱 탐색용 스크립트
 ```
 

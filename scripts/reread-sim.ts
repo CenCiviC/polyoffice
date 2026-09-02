@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs'
 import { Window } from 'happy-dom'
 
 import { IR_VERSION, normalizeIR, validateIR } from '../src/lib/ir'
-import { convertModel } from '../src/lib/narro'
+import { convertModel } from '../src/lib/polyoffice'
 import { html2hwpx } from '../src/lib/html2hwpx'
 import { html2docx } from '../src/lib/html2docx'
 import { html2odt } from '../src/lib/html2odt'

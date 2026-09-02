@@ -85,13 +85,13 @@ const BASE_CSS = `
   .hwp-page sup a { color: inherit; text-decoration: none; font-size: 0.75em; }
   /* 개요 번호 — **번호는 IR에 없다**. 여기서 세고, 백엔드 셋은 같은 스킴(OUTLINE_SCHEME)으로
      자기 포맷의 numbering 정의를 만든다. 화면과 저장물의 번호가 같아야 하므로 진실원은 하나다. */
-  @counter-style narro-hangul { system: alphabetic; symbols: ${HANGUL_ORDINALS.map((c) => `"${c}"`).join(' ')}; }
+  @counter-style polyoffice-hangul { system: alphabetic; symbols: ${HANGUL_ORDINALS.map((c) => `"${c}"`).join(' ')}; }
 ${OUTLINE_SCHEME.map((lv, i) => {
   const n = i + 1
   const deeper = OUTLINE_SCHEME.slice(i + 1)
     .map((_, k) => `o${i + k + 2}`)
     .join(' ')
-  const counter = lv.style === 'hangul' ? `counter(o${n}, narro-hangul)` : `counter(o${n})`
+  const counter = lv.style === 'hangul' ? `counter(o${n}, polyoffice-hangul)` : `counter(o${n})`
   const quote = (t: string) => (t ? ` "${t}"` : '')
   return (
     `  .hwp-page h${n}[data-num] { counter-increment: o${n};${deeper ? ` counter-reset: ${deeper};` : ''} }\n` +

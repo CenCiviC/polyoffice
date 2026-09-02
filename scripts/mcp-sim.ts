@@ -31,7 +31,7 @@ function check(label: string, ok: boolean, detail = '') {
   if (!ok) failures++
 }
 
-const client = new Client({ name: 'narro-mcp-sim', version: '0.0.0' })
+const client = new Client({ name: 'polyoffice-mcp-sim', version: '0.0.0' })
 const transport = new StdioClientTransport({ command: 'bun', args: ['run', 'mcp/server.ts'], cwd: REPO })
 await client.connect(transport)
 console.log('✓ stdio 연결 · initialize')
@@ -48,14 +48,14 @@ async function call(name: string, args: Record<string, unknown> = {}) {
   return { text: res.content.map((c) => c.text ?? '').join('\n'), isError: res.isError === true }
 }
 
-const guide = await call('narro_guide')
-check('narro_guide가 어휘를 돌려준다', guide.text.includes('doc-section') && guide.text.length > 1000, `${guide.text.length}자`)
+const guide = await call('polyoffice_guide')
+check('polyoffice_guide가 어휘를 돌려준다', guide.text.includes('doc-section') && guide.text.length > 1000, `${guide.text.length}자`)
 
-const bad = await call('narro_write', { ir_html: BAD, open: false })
+const bad = await call('polyoffice_write', { ir_html: BAD, open: false })
 check('계약 위반은 오류로 돌아온다', bad.isError && bad.text.includes('element-allowed'), bad.text.split('\n')[0])
 
 console.log('  … dev 서버를 띄우는 중 (처음이면 수십 초)')
-const write = await call('narro_write', { ir_html: DOC, name: 'MCP-왕복확인서', open: false })
+const write = await call('polyoffice_write', { ir_html: DOC, name: 'MCP-왕복확인서', open: false })
 for (const f of ['hwpx', 'docx', 'odt']) {
   check(`${f} 생성 + 되읽기`, new RegExp(`${f}\\s+✓`).test(write.text))
 }
@@ -72,14 +72,14 @@ if (url) {
 
 const dir = write.text.match(/파일: (.+)/)?.[1]
 if (dir) {
-  const read = await call('narro_read', { path: `${dir}/MCP-왕복확인서.hwpx` })
-  check('narro_read가 IR로 되돌린다', read.text.includes('MCP 왕복 확인서') && read.text.includes('<doc-section'))
+  const read = await call('polyoffice_read', { path: `${dir}/MCP-왕복확인서.hwpx` })
+  check('polyoffice_read가 IR로 되돌린다', read.text.includes('MCP 왕복 확인서') && read.text.includes('<doc-section'))
 }
 
-const status = await call('narro_viewer', { action: 'status' })
+const status = await call('polyoffice_viewer', { action: 'status' })
 check('뷰어 status', status.text.includes('http://localhost:'), status.text)
 
-const stop = await call('narro_viewer', { action: 'stop' })
+const stop = await call('polyoffice_viewer', { action: 'stop' })
 console.log(`  · ${stop.text}`)
 
 await client.close()

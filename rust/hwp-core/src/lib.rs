@@ -1,4 +1,4 @@
-//! hwp-core — 한글·워드·오픈오피스 문서를 Narro 문서 모델(JSON 계약)로 파싱하는 코어.
+//! hwp-core — 한글·워드·오픈오피스 문서를 PolyOffice 문서 모델(JSON 계약)로 파싱하는 코어.
 //! 브라우저(WASM)·CLI·서버가 같은 크레이트를 쓴다.
 //! .hwp 레코드 해독은 hwp.js(Apache-2.0, Han Lee and contributors)를 참고해 이식했다.
 

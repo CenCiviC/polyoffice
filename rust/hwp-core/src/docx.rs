@@ -1,4 +1,4 @@
-//! DOCX(OOXML, ECMA-376) 파싱 — `word/document.xml`을 Narro 문서 모델로 매핑한다.
+//! DOCX(OOXML, ECMA-376) 파싱 — `word/document.xml`을 PolyOffice 문서 모델로 매핑한다.
 //! .hwp/.hwpx와 같은 DocModel 계약을 채우므로 방출기(TS)는 포맷을 구분하지 않는다.
 //!
 //! 서식은 "직접 지정(rPr) > 스타일 체인(pStyle/rStyle + basedOn) > docDefaults" 순으로

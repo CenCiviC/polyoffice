@@ -3,7 +3,7 @@
 // 동일한 IR HTML이 나오는지 검사한다. Rust 파서의 회귀 테스트.
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { convertModel } from '../src/lib/narro'
+import { convertModel } from '../src/lib/polyoffice'
 import { parseHwpJs } from '../src/lib/parser-js'
 import { initHwpWasm, parseHwpWasm } from '../src/lib/parser-wasm'
 

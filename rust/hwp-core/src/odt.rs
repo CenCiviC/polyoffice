@@ -1,4 +1,4 @@
-//! ODT(OpenDocument Text, ODF 1.3) 파싱 — `content.xml`을 Narro 문서 모델로 매핑한다.
+//! ODT(OpenDocument Text, ODF 1.3) 파싱 — `content.xml`을 PolyOffice 문서 모델로 매핑한다.
 //! .hwp/.hwpx/.docx와 같은 DocModel 계약을 채운다.
 //!
 //! ODF는 서식을 전부 이름 붙은 스타일로 빼고 본문은 `text:style-name`으로 참조만 한다.

@@ -7,7 +7,7 @@ import { Window } from 'happy-dom'
 
 import { html2docx } from '../src/lib/html2docx'
 import { html2odt } from '../src/lib/html2odt'
-import { convertModel } from '../src/lib/narro'
+import { convertModel } from '../src/lib/polyoffice'
 import { initHwpWasm, parseHwpWasm } from '../src/lib/parser-wasm'
 
 const [outDir, ...inputs] = process.argv.slice(2)
