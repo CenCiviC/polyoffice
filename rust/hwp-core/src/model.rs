@@ -64,14 +64,15 @@ pub struct BorderFill {
     pub border: Option<Option<Border>>,
 }
 
-/// 테두리 한 변 — IR의 `border` 축약 속성과 같은 어휘
-#[derive(Serialize, Debug, Clone)]
+/// 테두리 한 변 — IR의 `border` 축약 속성과 같은 어휘.
+/// `style`은 리더 넷 모두 리터럴에서만 만들므로 힙을 쓰지 않는다.
+#[derive(Serialize, Debug, Clone, Copy)]
 #[serde(rename_all = "camelCase")]
 pub struct Border {
     /// pt
     pub width_pt: f32,
     /// solid · dashed · dotted · double
-    pub style: String,
+    pub style: &'static str,
     pub color: [u8; 3],
 }
 
@@ -176,7 +177,7 @@ pub struct Run {
     pub link: Option<String>,
     /// 계산 필드 — page · pages. 글자가 없는 런이다(번호는 렌더가 센다).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub field: Option<String>,
+    pub field: Option<&'static str>,
 }
 
 #[derive(Serialize, Debug, Default)]
@@ -204,6 +205,6 @@ pub struct Cell {
     pub border_fill_id: Option<u16>,
     /// 세로 정렬 — top · middle · bottom. 없으면 기본값(middle)
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub vert_align: Option<String>,
+    pub vert_align: Option<&'static str>,
     pub paragraphs: Vec<Paragraph>,
 }

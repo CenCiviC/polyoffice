@@ -11,6 +11,7 @@
 //! 4. 표는 별도 구조가 아니라 **문단 속성**이다. 셀은 0x07로 끝나고, 행은
 //!    sprmPFTtp가 켜진 문단으로 끝난다. 열 폭·병합은 sprmTDefTable 안에 있다.
 
+use std::borrow::Cow;
 use std::io::{Cursor, Read};
 
 use crate::intern::Interner;
@@ -21,7 +22,7 @@ use crate::reader::ByteReader;
 const TWIP: i32 = 5;
 
 pub fn parse_doc_document(data: &[u8]) -> Result<DocModel, String> {
-    let cursor = Cursor::new(data.to_vec());
+    let cursor = Cursor::new(data);
     let mut cfb = cfb::CompoundFile::open(cursor).map_err(|e| format!("CFB 열기 실패: {e}"))?;
 
     let wd = read_stream(&mut cfb, "/WordDocument")?;
@@ -38,14 +39,14 @@ pub fn parse_doc_document(data: &[u8]) -> Result<DocModel, String> {
     let chars_fmt = FormatRuns::chpx(&wd, &table, fib.fc_plcf_bte_chpx, fib.lcb_plcf_bte_chpx);
     let paras_fmt = FormatRuns::papx(&wd, &table, fib.fc_plcf_bte_papx, fib.lcb_plcf_bte_papx);
 
-    let data = read_stream(&mut cfb, "/Data").unwrap_or_default();
-    let art = read_drawings(&[&wd, &data], &table, &fib.fc_lcb_pairs);
+    let data_stream = read_stream(&mut cfb, "/Data").unwrap_or_default();
+    let art = read_drawings(&[&wd, &data_stream], &table, &fib.fc_lcb_pairs);
     let mut builder = Builder {
         intern: Interner::default(),
         fonts,
         chars_fmt,
         paras_fmt,
-        data,
+        data: data_stream,
         art,
     };
     let paragraphs = builder.build(&doc);
@@ -72,7 +73,7 @@ pub fn parse_doc_document(data: &[u8]) -> Result<DocModel, String> {
     })
 }
 
-fn read_stream<F: Read + std::io::Seek + std::io::Write>(
+fn read_stream<F: Read + std::io::Seek>(
     cfb: &mut cfb::CompoundFile<F>,
     path: &str,
 ) -> Result<Vec<u8>, String> {
@@ -109,12 +110,18 @@ impl Fib {
         if wd.len() < 160 {
             return Err("WordDocument 스트림이 너무 짧음".into());
         }
-        let u16at = |o: usize| u16::from_le_bytes([wd[o], wd[o + 1]]);
-        if u16at(0) != 0xA5EC {
-            return Err(format!("Word 시그니처 아님 (0x{:04X})", u16at(0)));
+        // csw·cslw는 파일에서 읽은 개수라 그대로 오프셋으로 쓰면 안 된다 —
+        // 무검사로 인덱싱하면 잘린 .doc 하나로 패닉하고, WASM에서는 모듈째 죽는다.
+        let u16at = |o: usize| -> Result<u16, String> {
+            wd.get(o..o + 2)
+                .map(|b| u16::from_le_bytes([b[0], b[1]]))
+                .ok_or_else(|| format!("FIB가 잘려 있음 (offset {o})"))
+        };
+        if u16at(0)? != 0xA5EC {
+            return Err(format!("Word 시그니처 아님 (0x{:04X})", u16at(0)?));
         }
-        let n_fib = u16at(2);
-        let flags = u16at(10);
+        let n_fib = u16at(2)?;
+        let flags = u16at(10)?;
         if flags & 0x0100 != 0 {
             return Err("암호화된 문서는 지원하지 않음".into());
         }
@@ -126,20 +133,21 @@ impl Fib {
         };
 
         // FibBase(32) → csw + rgW97 → cslw + rgLw97 → cbRgFcLcb + rgFcLcb
-        let csw = u16at(32) as usize;
+        let csw = u16at(32)? as usize;
         let cslw_off = 34 + csw * 2;
-        let cslw = u16at(cslw_off) as usize;
+        let cslw = u16at(cslw_off)? as usize;
         let rg_lw = cslw_off + 2;
         let cb_rg_fc_lcb_off = rg_lw + cslw * 4;
         let rg_fc_lcb = cb_rg_fc_lcb_off + 2;
-        let cb_rg_fc_lcb = u16at(cb_rg_fc_lcb_off) as usize;
+        let cb_rg_fc_lcb = u16at(cb_rg_fc_lcb_off)? as usize;
 
         if wd.len() < rg_fc_lcb + cb_rg_fc_lcb * 8 {
             return Err("FIB가 잘려 있음".into());
         }
+        // 여기서부터는 위 길이 검사가 덮는 범위라 인덱싱해도 안전하다
         let u32at = |o: usize| u32::from_le_bytes([wd[o], wd[o + 1], wd[o + 2], wd[o + 3]]);
-        // rgLw97[3] = ccpText (본문 문자 수)
-        let ccp_text = u32at(rg_lw + 12);
+        // rgLw97[3] = ccpText (본문 문자 수). 정상 파일은 cslw=22지만 잘린 파일도 온다
+        let ccp_text = if cslw >= 4 { u32at(rg_lw + 12) } else { 0 };
         // rgFcLcb97은 (fc, lcb) 8바이트 쌍 배열 — 인덱스는 MS-DOC 스펙 순서
         let pair = |i: usize| -> (u32, u32) {
             if i >= cb_rg_fc_lcb {
@@ -347,7 +355,7 @@ fn sprms(grpprl: &[u8]) -> Vec<Sprm<'_>> {
 
 // ---------------- FKP로 흩어진 서식 ----------------
 
-#[derive(Clone, Default)]
+#[derive(Clone, Copy, Default)]
 struct ChpFmt {
     bold: bool,
     italic: bool,
@@ -533,7 +541,7 @@ fn apply_chp(fmt: &mut ChpFmt, grpprl: &[u8]) {
             0x6870 if s.operand.len() >= 4 => {
                 fmt.color = Some([s.operand[0], s.operand[1], s.operand[2]])
             }
-            0x4A4F | 0x4A50 | 0x4A51 if s.operand.len() >= 2 => {
+            0x4A4F..=0x4A51 if s.operand.len() >= 2 => {
                 fmt.font = Some(u16::from_le_bytes([s.operand[0], s.operand[1]]))
             }
             0x0855 => fmt.special = one != 0,
@@ -618,9 +626,11 @@ fn parse_tdef(operand: &[u8]) -> Option<Tap> {
 // ---------------- 그림 (PICF + Escher BLIP) ----------------
 
 /// 그림 하나: 실제 바이트와 표시 크기(hwpunit).
-struct DocPicture {
-    ext: String,
-    bytes: Vec<u8>,
+/// 바이트는 대개 Data 스트림이나 저장소를 그대로 빌린다 — DIB→BMP 변환처럼
+/// 정말 새로 만들어야 할 때만 Owned가 된다.
+struct DocPicture<'a> {
+    ext: &'static str,
+    bytes: Cow<'a, [u8]>,
     width: u32,
     height: u32,
 }
@@ -629,7 +639,11 @@ struct DocPicture {
 ///
 /// 위치에는 PICF(그림 서술자)가 있고, 그 헤더 뒤부터가 Office Drawing(Escher)
 /// 레코드 트리다. 트리를 훑어 실제 이미지가 담긴 BLIP 레코드를 찾는다.
-fn read_picture(data: &[u8], off: u32, store: &[(String, Vec<u8>)]) -> Option<DocPicture> {
+fn read_picture<'a>(
+    data: &'a [u8],
+    off: u32,
+    store: &'a [(&'static str, Vec<u8>)],
+) -> Option<DocPicture<'a>> {
     let picf = data.get(off as usize..)?;
     let u16at =
         |o: usize| -> Option<u16> { Some(u16::from_le_bytes([*picf.get(o)?, *picf.get(o + 1)?])) };
@@ -652,13 +666,20 @@ fn read_picture(data: &[u8], off: u32, store: &[(String, Vec<u8>)]) -> Option<Do
     };
     let escher = picf.get(cb_header..end)?;
     // 바이트가 PICF 뒤에 바로 붙어 있으면 그것을, 아니면 번호(pib)로 저장소에서 꺼낸다
+    let from_store = |i: usize| -> Option<(&'static str, Cow<'a, [u8]>)> {
+        let (ext, bytes) = store.get(i)?;
+        Some((ext, Cow::Borrowed(bytes.as_slice())))
+    };
     let (ext, bytes) = find_blip(escher)
-        .or_else(|| {
-            let pib = find_pib(escher)? as usize;
-            store.get(pib.checked_sub(1)?).cloned()
-        })
+        .or_else(|| from_store((find_pib(escher)? as usize).checked_sub(1)?))
         // 번호도 없는데 저장소에 그림이 하나뿐이면 그것으로 본다
-        .or_else(|| (store.len() == 1).then(|| store[0].clone()))?;
+        .or_else(|| {
+            if store.len() == 1 {
+                from_store(0)
+            } else {
+                None
+            }
+        })?;
 
     Some(DocPicture {
         ext,
@@ -672,7 +693,7 @@ fn read_picture(data: &[u8], off: u32, store: &[(String, Vec<u8>)]) -> Option<Do
 #[derive(Default)]
 struct Drawings {
     /// 1번부터 매겨지는 그림 목록 (pib가 이 번호를 가리킨다)
-    blips: Vec<(String, Vec<u8>)>,
+    blips: Vec<(&'static str, Vec<u8>)>,
     /// 도형 식별자(spid) → pib
     pib_of_spid: std::collections::HashMap<u32, u32>,
     /// 문자 위치(CP) → 도형 식별자. 떠 있는 그림은 0x08 앵커가 여기로 연결된다.
@@ -701,7 +722,8 @@ fn read_drawings(delay: &[&[u8]], table: &[u8], pairs: &[(u32, u32)]) -> Drawing
     for (_, _, dgg) in records(art).into_iter().filter(|(t, _, _)| *t == 0xF000) {
         for (_, _, bstore) in records(dgg).into_iter().filter(|(t, _, _)| *t == 0xF001) {
             for (_, _, fbse) in records(bstore).into_iter().filter(|(t, _, _)| *t == 0xF007) {
-                out.blips.push(read_fbse(delay, fbse));
+                let (ext, bytes) = read_fbse(delay, fbse);
+                out.blips.push((ext, bytes.into_owned()));
             }
         }
     }
@@ -793,7 +815,7 @@ fn art_containers(art: &[u8]) -> Vec<&[u8]> {
 
 /// FBSE 하나 → 그림. 바이트가 안에 박혀 있으면 그걸 쓰고,
 /// 없으면 foDelay가 가리키는 WordDocument 위치에서 읽는다.
-fn read_fbse(delay: &[&[u8]], fbse: &[u8]) -> (String, Vec<u8>) {
+fn read_fbse<'a>(delay: &[&'a [u8]], fbse: &'a [u8]) -> (&'static str, Cow<'a, [u8]>) {
     let cb_name = fbse.get(33).copied().unwrap_or(0) as usize;
     if let Some(found) = fbse
         .get(36 + cb_name..)
@@ -832,7 +854,9 @@ fn records(buf: &[u8]) -> Vec<(u16, u16, &[u8])> {
         }
         let end = (i + 8).saturating_add(len).min(buf.len());
         out.push((rec_type, ver_inst >> 4, &buf[i + 8..end]));
-        i = i + 8 + len;
+        // `i + 8 + len`으로 더하면 wasm32(usize 32비트)에서 len이 크면 wrapping해
+        // 같은 레코드를 무한히 다시 읽는다. 이미 잘라 둔 end로 넘긴다.
+        i = end;
     }
     out
 }
@@ -871,7 +895,7 @@ fn find_pib(buf: &[u8]) -> Option<u32> {
 /// Escher 레코드 트리에서 첫 BLIP을 찾는다.
 /// 레코드 헤더 8바이트: verAndInstance(2) + type(2) + length(4).
 /// ver이 0xF면 컨테이너라 본문이 다시 레코드 목록이다.
-fn find_blip(buf: &[u8]) -> Option<(String, Vec<u8>)> {
+fn find_blip(buf: &[u8]) -> Option<(&'static str, Cow<'_, [u8]>)> {
     // 재귀 대신 스택 — Escher 중첩은 얕지만 WASM 스택을 건드릴 이유가 없다
     let mut stack = vec![buf];
     while let Some(cur) = stack.pop() {
@@ -897,7 +921,10 @@ fn find_blip(buf: &[u8]) -> Option<(String, Vec<u8>)> {
             if len == 0 && ver_inst == 0 && rec_type == 0 {
                 break; // 패딩 구간 — 더 볼 것 없다
             }
-            i = i + 8 + len;
+            if body_end <= i {
+                break; // 진행이 없으면 무한 루프다
+            }
+            i = body_end;
         }
     }
     None
@@ -905,7 +932,7 @@ fn find_blip(buf: &[u8]) -> Option<(String, Vec<u8>)> {
 
 /// BLIP 레코드 본문 → (확장자, 이미지 바이트).
 /// 앞에 16바이트 UID가 1개 또는 2개 붙는데, instance가 홀수면 2개다.
-fn blip_image(rec_type: u16, instance: u16, body: &[u8]) -> Option<(String, Vec<u8>)> {
+fn blip_image(rec_type: u16, instance: u16, body: &[u8]) -> Option<(&'static str, Cow<'_, [u8]>)> {
     let ext = match rec_type {
         0xF01D | 0xF02A => "jpg",
         0xF01E => "png",
@@ -913,9 +940,9 @@ fn blip_image(rec_type: u16, instance: u16, body: &[u8]) -> Option<(String, Vec<
         0xF029 => "tif",
         // 메타파일은 deflate로 눌려 있고 브라우저가 그리지도 못한다 —
         // 바이트 없이 확장자만 넘겨 방출기가 자리표시로 강등하게 한다
-        0xF01A => return Some(("emf".into(), Vec::new())),
-        0xF01B => return Some(("wmf".into(), Vec::new())),
-        0xF01C => return Some(("pict".into(), Vec::new())),
+        0xF01A => return Some(("emf", Cow::Borrowed(&[]))),
+        0xF01B => return Some(("wmf", Cow::Borrowed(&[]))),
+        0xF01C => return Some(("pict", Cow::Borrowed(&[]))),
         _ => return None,
     };
     let skip = 16 * (1 + (instance & 1) as usize) + 1; // UID들 + tag 1바이트
@@ -925,9 +952,9 @@ fn blip_image(rec_type: u16, instance: u16, body: &[u8]) -> Option<(String, Vec<
     }
     if ext == "dib" {
         // DIB는 BMP 파일 헤더(14바이트)가 없는 알맹이 — 붙여 줘야 브라우저가 그린다
-        return Some(("bmp".into(), dib_to_bmp(raw)?));
+        return Some(("bmp", Cow::Owned(dib_to_bmp(raw)?)));
     }
-    Some((ext.into(), raw.to_vec()))
+    Some((ext, Cow::Borrowed(raw)))
 }
 
 /// BITMAPINFOHEADER부터 시작하는 DIB에 BMP 파일 헤더를 씌운다.
@@ -1000,7 +1027,6 @@ impl FontTable {
 
 /// 문단 하나로 끊긴 조각. `.doc`은 문단 끝(0x0D)과 셀 끝(0x07)이 둘 다 구분자다.
 struct Unit {
-    text: String,
     /// 0x07로 끝났다 = 셀 경계
     ends_cell: bool,
     pap: PapFmt,
@@ -1035,7 +1061,7 @@ impl Builder {
                     row_cells.push(std::mem::take(&mut cell_paras));
                 }
                 if !row_cells.is_empty() {
-                    rows.push((std::mem::take(&mut row_cells), u.pap.tap.clone()));
+                    rows.push((std::mem::take(&mut row_cells), u.pap.tap));
                 }
                 continue;
             }
@@ -1095,7 +1121,6 @@ impl Builder {
     fn split_units(&mut self, doc: &DocText) -> Vec<Unit> {
         let mut units = Vec::new();
         let mut cur = Unit {
-            text: String::new(),
             ends_cell: false,
             pap: PapFmt::default(),
             runs: Vec::new(),
@@ -1103,7 +1128,7 @@ impl Builder {
         };
         let mut pending: Option<(u32, String)> = None; // (charShapeId, 모으는 중인 텍스트)
 
-        let mut flush_run = |pending: &mut Option<(u32, String)>, runs: &mut Vec<Run>| {
+        let flush_run = |pending: &mut Option<(u32, String)>, runs: &mut Vec<Run>| {
             if let Some((id, text)) = pending.take() {
                 if !text.is_empty() {
                     runs.push(Run {
@@ -1139,7 +1164,6 @@ impl Builder {
                     units.push(std::mem::replace(
                         &mut cur,
                         Unit {
-                            text: String::new(),
                             ends_cell: false,
                             pap: PapFmt::default(),
                             runs: Vec::new(),
@@ -1171,7 +1195,6 @@ impl Builder {
                 _ => {
                     let shape = self.shape_at(fc);
                     push_char(&mut pending, ch, shape, &mut cur.runs);
-                    cur.text.push(ch);
                 }
             }
         }
@@ -1190,9 +1213,10 @@ impl Builder {
         }
         let off = chp.pic_offset?;
         let pic = read_picture(&self.data, off, &self.art.blips)?;
+        // self.data·self.art는 빌리고 self.intern만 mut로 잡는다 (필드가 서로 겹치지 않는다)
         let bin_data_id = self
             .intern
-            .bin_data(&format!("pic@{off}"), &pic.ext, &pic.bytes);
+            .bin_data(&format!("pic@{off}"), pic.ext, &pic.bytes);
         Some(Image {
             bin_data_id,
             width: pic.width,
@@ -1204,11 +1228,11 @@ impl Builder {
     fn floating_picture(&mut self, cp: u32) -> Option<Image> {
         let spid = *self.art.spid_at_cp.get(&cp)?;
         let pib = *self.art.pib_of_spid.get(&spid)? as usize;
-        let (ext, bytes) = self.art.blips.get(pib.checked_sub(1)?)?.clone();
+        let (ext, bytes) = self.art.blips.get(pib.checked_sub(1)?)?;
         if ext.is_empty() {
             return None;
         }
-        let bin_data_id = self.intern.bin_data(&format!("blip{pib}"), &ext, &bytes);
+        let bin_data_id = self.intern.bin_data(&format!("blip{pib}"), ext, bytes);
         // 떠 있는 도형은 표시 크기가 도형 속성에 있는데, 원본 비율대로 두면
         // 방출기가 max-width로 페이지 안에 맞춰 준다
         Some(Image {
@@ -1343,5 +1367,19 @@ fn push_char(pending: &mut Option<(u32, String)>, ch: char, shape: u32, runs: &m
             *pending = Some((shape, ch.to_string()));
         }
         None => *pending = Some((shape, ch.to_string())),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// 잘린 FIB(csw가 스트림 밖을 가리킴)로 패닉하지 않고 오류를 돌려준다
+    #[test]
+    fn truncated_fib_errors_instead_of_panicking() {
+        let mut wd = vec![0u8; 200];
+        wd[0] = 0xEC;
+        wd[1] = 0xA5;
+        wd[32] = 0xFF; // csw = 0xFFFF → cslw 오프셋이 131104
+        wd[33] = 0xFF;
+        assert!(super::Fib::parse(&wd).is_err());
     }
 }
