@@ -4,7 +4,7 @@
 import { readdirSync, readFileSync, writeFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { Window } from 'happy-dom'
-import { convertModel, type ConvertResult } from '../src/lib/narro'
+import { convertModel, type ConvertResult } from '../src/lib/polyoffice'
 import { validateIR } from '../src/lib/ir'
 import { parseHwpJs } from '../src/lib/parser-js'
 import { initHwpWasm, parseHwpWasm } from '../src/lib/parser-wasm'

@@ -12,7 +12,7 @@ import { unzipSync, strFromU8 } from 'fflate'
 
 import { IR_VERSION, normalizeIR, validateIR } from '../src/lib/ir'
 import { CELL_BORDER, CELL_VALIGN, parseBorder, readIr, toPt } from '../src/lib/ir-model'
-import { BASE_CSS } from '../src/lib/narro'
+import { BASE_CSS } from '../src/lib/polyoffice'
 import { html2hwpx } from '../src/lib/html2hwpx'
 import { html2docx } from '../src/lib/html2docx'
 import { html2odt } from '../src/lib/html2odt'

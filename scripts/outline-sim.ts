@@ -12,7 +12,7 @@ import { unzipSync, strFromU8 } from 'fflate'
 
 import { IR_VERSION, normalizeIR, validateIR } from '../src/lib/ir'
 import { OUTLINE_SCHEME, readIr } from '../src/lib/ir-model'
-import { BASE_CSS } from '../src/lib/narro'
+import { BASE_CSS } from '../src/lib/polyoffice'
 import { html2hwpx } from '../src/lib/html2hwpx'
 import { html2docx } from '../src/lib/html2docx'
 import { html2odt } from '../src/lib/html2odt'
@@ -67,10 +67,10 @@ normalizeIR(root)
 
 // ── 3. 뷰어 CSS — 스킴과 같은가 ─────────────────────────────────────
 {
-  check('@counter-style narro-hangul 정의', BASE_CSS.includes('@counter-style narro-hangul'))
+  check('@counter-style polyoffice-hangul 정의', BASE_CSS.includes('@counter-style polyoffice-hangul'))
   const mismatches = OUTLINE_SCHEME.filter((lv, i) => {
     const n = i + 1
-    const counter = lv.style === 'hangul' ? `counter(o${n}, narro-hangul)` : `counter(o${n})`
+    const counter = lv.style === 'hangul' ? `counter(o${n}, polyoffice-hangul)` : `counter(o${n})`
     const want = `.hwp-page h${n}[data-num]::before { content:${lv.prefix ? ` "${lv.prefix}"` : ''} ${counter}${lv.suffix ? ` "${lv.suffix}"` : ''} " "; }`
     return !BASE_CSS.includes(want)
   })

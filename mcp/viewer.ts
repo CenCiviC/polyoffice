@@ -17,8 +17,8 @@ export const SCRATCH = join(REPO, 'public', 'scratch')
 /** vite가 5173부터 비어 있는 포트로 올라간다 — 그 범위만 훑는다 */
 const PORTS = [5173, 5174, 5175, 5176, 5177]
 
-/** 그 포트에 뜬 게 정말 narro인가 (남의 dev 서버에 문서를 던지지 않으려고) */
-async function isNarro(port: number): Promise<boolean> {
+/** 그 포트에 뜬 게 정말 polyoffice인가 (남의 dev 서버에 문서를 던지지 않으려고) */
+async function isPolyOffice(port: number): Promise<boolean> {
   try {
     const res = await fetch(`http://localhost:${port}/`, { signal: AbortSignal.timeout(800) })
     return res.ok && (await res.text()).includes('/src/main.tsx')
@@ -28,7 +28,7 @@ async function isNarro(port: number): Promise<boolean> {
 }
 
 async function findServer(): Promise<number | null> {
-  for (const p of PORTS) if (await isNarro(p)) return p
+  for (const p of PORTS) if (await isPolyOffice(p)) return p
   return null
 }
 

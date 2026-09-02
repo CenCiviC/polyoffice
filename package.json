@@ -1,5 +1,5 @@
 {
-  "name": "narro",
+  "name": "polyoffice",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -28,7 +28,8 @@
     "samples-sim": "bun run scripts/samples-sim.ts",
     "shots": "bun run scripts/shots.ts",
     "mcp": "bun run mcp/server.ts",
-    "mcp-sim": "bun run scripts/mcp-sim.ts"
+    "mcp-sim": "bun run scripts/mcp-sim.ts",
+    "open-sim": "bun run scripts/open-sim.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
