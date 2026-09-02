@@ -1,7 +1,10 @@
-# Narro
+# PolyOffice
 
-한글(.hwp/.hwpx)과 Word·오픈오피스(.doc/.docx/.odt) 문서를 **브라우저 안에서** HTML로
-변환하는 실험. 파일이 서버로 올라가지 않고 전부 클라이언트에서 파싱된다.
+한글(.hwp/.hwpx)·Word(.doc/.docx)·오픈오피스(.odt) 문서를 **하나의 편집기에서** 열고,
+고치고, 다시 저장한다. 파일이 서버로 올라가지 않고 전부 브라우저에서 처리된다.
+
+읽기는 다섯 포맷 전부, **쓰기는 .hwpx·.docx·.odt** 세 포맷이다. `.hwp`와 `.doc`은
+OLE 바이너리 직렬화라 읽기만 된다 — 열어서 고친 뒤 .hwpx나 .docx로 저장하면 된다.
 
 **파서는 자체 Rust 크레이트(`rust/hwp-core`) → WASM.** 다섯 포맷이 모두 같은
 문서 모델 JSON 계약(`src/lib/model.ts` ↔ `rust/hwp-core/src/model.rs`)을 채우기 때문에
@@ -129,7 +132,7 @@ Claude Code는 레포의 `.mcp.json`을 그대로 읽는다 — 프로젝트를 
 ```json
 {
   "mcpServers": {
-    "narro": { "command": "bun", "args": ["run", "/절대경로/hwp2html/mcp/server.ts"] }
+    "narro": { "command": "bun", "args": ["run", "/절대경로/polyoffice/mcp/server.ts"] }
   }
 }
 ```
@@ -335,3 +338,15 @@ mcp/viewer.ts         # 로컬 dev 서버 찾기/띄우기 + public/scratch 발�
 docs/IR-AUTHORING.md  # 생성하는 쪽을 위한 IR 작성 설명서 (narro_guide가 그대로 돌려준다)
 scripts/probe*.ts     # hwp.js 파싱 탐색용 스크립트
 ```
+
+## 라이선스
+
+이 레포는 **Apache License 2.0**이다 ([LICENSE](LICENSE)).
+
+포함된 제3자 저작물:
+
+| 대상 | 라이선스 | 비고 |
+|---|---|---|
+| [hwp.js](https://github.com/hahnlee/hwp.js) (Han Lee) | Apache-2.0 | `.hwp` 레코드 해독 로직을 Rust로 이식했다. 출처는 `rust/hwp-core/src/parse.rs` 머리에 밝혀 두었다 |
+| Noto Sans KR | SIL OFL 1.1 | `public/fonts/` — 전문은 [LICENSE-OFL.txt](public/fonts/LICENSE-OFL.txt). © 2014-2021 Adobe |
+| `samples/` 의 정부 문서 | 각 기관 공표물 | 기재부·문체부·행안부·국립국어원이 공개한 자료를 파서 검증용으로 담았다. 저작권은 각 기관에 있다 |
