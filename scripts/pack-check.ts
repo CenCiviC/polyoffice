@@ -34,6 +34,7 @@ const must = [
   'rust/hwp-core/pkg/hwp_core_bg.wasm',
   'docs/IR-AUTHORING.md',
   'LICENSE',
+  'README.md',
 ]
 for (const f of must) check(f, existsSync(join(PKG, f)))
 check('vite.config.ts 없음 (패키지 모드로 감지되게)', !existsSync(join(PKG, 'vite.config.ts')))
@@ -45,6 +46,9 @@ check('shebang', bin.startsWith('#!/usr/bin/env node'))
 const manifest = JSON.parse(readFileSync(join(PKG, 'package.json'), 'utf8'))
 check('bin 항목', manifest.bin?.['polyoffice-mcp'] === 'bin/polyoffice-mcp.js')
 check('private 아님', manifest.private !== true)
+// README가 없으면 npm 페이지가 빈 채로 올라간다
+const readme = readFileSync(join(PKG, 'README.md'), 'utf8')
+check('README에 설치 한 줄', readme.includes('claude mcp add polyoffice'))
 
 let total = 0
 const walk = (dir: string) => {

@@ -62,7 +62,9 @@ cpSync(join(REPO, 'LICENSE'), join(OUT, 'LICENSE'))
 // polyoffice_guide가 그대로 돌려주는 문서 — bin/에서 ../docs/ 로 읽는다
 mkdirSync(join(OUT, 'docs'), { recursive: true })
 cpSync(join(REPO, 'docs', 'IR-AUTHORING.md'), join(OUT, 'docs', 'IR-AUTHORING.md'))
-step('글꼴·wasm·템플릿·가이드 → public/, rust/, docs/')
+// npm 페이지에 걸리는 README — 레포 것(앱 이야기)이 아니라 MCP 서버 이야기다
+cpSync(join(REPO, 'mcp', 'README.npm.md'), join(OUT, 'README.md'))
+step('글꼴·wasm·템플릿·가이드·README → public/, rust/, docs/')
 
 // ── 3. 매니페스트. 앱 것과 갈라 둔다 (앱은 private, 이건 배포용)
 writeFileSync(
