@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "narro",
+      "name": "polyoffice",
       "dependencies": {
         "@modelcontextprotocol/sdk": "^1.30.0",
         "cfb": "^1.2.2",
