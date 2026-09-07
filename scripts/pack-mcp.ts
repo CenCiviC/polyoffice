@@ -24,7 +24,12 @@ import { fileURLToPath } from 'node:url'
 
 const REPO = fileURLToPath(new URL('..', import.meta.url))
 const OUT = join(REPO, 'build', 'npm')
-const app = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8'))
+// 버전 진실원은 mcp/version.ts — 서버가 --version으로 찍는 값과 같아야 한다
+const VERSION = /VERSION = '([^']+)'/.exec(readFileSync(join(REPO, 'mcp', 'version.ts'), 'utf8'))?.[1]
+if (!VERSION) {
+  console.error('mcp/version.ts 에서 VERSION을 못 읽었습니다')
+  process.exit(1)
+}
 
 function step(msg: string) {
   console.log(`  ${msg}`)
@@ -72,7 +77,7 @@ writeFileSync(
   JSON.stringify(
     {
       name: 'polyoffice-mcp',
-      version: app.version === '0.0.0' ? '0.1.0' : app.version,
+      version: VERSION,
       description:
         '한글(.hwp/.hwpx)·Word(.doc/.docx)·오픈오피스(.odt) 문서를 읽고 고치고 쓰는 MCP 서버 — 파일이 서버로 올라가지 않는다',
       type: 'module',
