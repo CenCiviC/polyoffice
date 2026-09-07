@@ -66,9 +66,20 @@ DearDent EMR DS 이식)을 따른다. **UI를 만들거나 고치기 전에
 `public/icons/`(polyoffice 로고). 변환된 문서 콘텐츠(doc-section 내부)는 DS 적용 대상이 아니다
 — 원본 충실도 우선.
 
+## 필요한 것
+
+**[Bun](https://bun.sh) 하나면 된다** (`curl -fsSL https://bun.sh/install | bash`).
+Node·Rust·한글·Word 전부 필요 없다.
+
+Rust 파서는 미리 빌드한 WASM(`rust/hwp-core/pkg/`)을 레포에 커밋해 두었으므로
+**클론 직후 바로 돌아간다.** Rust 툴체인은 파서를 직접 고칠 때만 필요하고,
+그때도 `wasm-pack`은 npm 의존성이라 따로 설치할 게 없다 (`bun run wasm:build`).
+
 ## 실행
 
 ```bash
+git clone https://github.com/CenCiviC/polyoffice.git
+cd polyoffice
 bun install
 bun run dev            # http://localhost:5173 — 문서 드래그&드롭
                        #   ?doc=<url> 로 링크에서 바로 열기 (다른 오리진이면 CORS 필요)
