@@ -103,6 +103,7 @@ bun run golden-sim                  # 한글이 저장한 골든과 대조 — �
 bun run samples-sim                 # samples/ir 전수 — 어떤 문서에나 성립해야 하는 불변식
 bun run mcp                         # MCP 서버 (stdio) — 프롬프트에서 문서 만들기
 bun run mcp-sim                     # MCP 왕복 검증 (도구 5종 + dev 서버 + 편집기 링크)
+bun run pack:mcp                    # npm 패키지(polyoffice-mcp) 조립 + node로 띄워 전수 검증
 bun run open-sim                    # 열기→편집→원본 자리로 되쓰기 왕복 검증 (토큰·덮어쓰기 규칙)
 bun run shots [문서] [출력]          # 진짜 Chrome에 편집기를 띄워 화면 캡처 (dev 서버 먼저)
 bun run compare <input.hwp>         # Rust WASM vs hwp.js 파서 골든 비교
@@ -138,16 +139,28 @@ python3 scripts/make-office-fixtures.py rust/hwp-core/tests/fixtures
 
 ### 붙이기
 
-Claude Code는 레포의 `.mcp.json`을 그대로 읽는다 — 프로젝트를 열고 승인하면 끝.
+**클론 없이 한 줄로 붙일 수 있다** — npm 패키지로 배포하므로 레포도 bun도 Rust도 필요 없다:
+
+```bash
+claude mcp add polyoffice -- npx -y polyoffice-mcp
+```
+
+파서(wasm)·글꼴·편집기 SPA를 전부 동봉하고 런타임 의존성이 0이다. 편집기는 미리
+빌드한 정적 SPA를 내장 서버가 띄우므로 vite도 필요 없다. Node 20+ 하나면 된다.
+
 다른 클라이언트(Claude Desktop·Cursor)는 설정에 이렇게 넣는다:
 
 ```json
 {
   "mcpServers": {
-    "polyoffice": { "command": "bun", "args": ["run", "/절대경로/polyoffice/mcp/server.ts"] }
+    "polyoffice": { "command": "npx", "args": ["-y", "polyoffice-mcp"] }
   }
 }
 ```
+
+레포를 클론해 **개발할 때는** `.mcp.json`이 그대로 붙는다 (Claude Code는 프로젝트를
+열고 승인하면 끝). 이때는 소스를 직접 돌리고 편집기도 vite dev 서버라 HMR이 산다 —
+같은 서버 코드가 `mcp/paths.ts`의 판별로 두 모드를 오간다.
 
 ### 남의 문서를 열어 사람이 고치기
 
@@ -376,7 +389,12 @@ scripts/shots.ts      # CLI — 설치된 Chrome으로 편집기 화면 캡처 (
 scripts/mcp-sim.ts    # CLI — 진짜 MCP 클라이언트로 서버 왕복 (도구 5종 + 편집기 링크)
 scripts/open-sim.ts   # CLI — 열기→되쓰기 왕복 + 토큰 거부·덮어쓰기 규칙
 mcp/server.ts         # MCP(stdio) — polyoffice_guide·write·read·open·viewer
-mcp/viewer.ts         # 로컬 dev 서버 찾기/띄우기 + public/scratch 발행
+mcp/paths.ts          # 레포 체크아웃 ↔ 설치된 패키지 판별 — 자산·작업 디렉터리를 가른다
+mcp/viewer.ts         # 편집기 띄우기(vite 또는 정적 서버) + scratch 발행
+mcp/static-server.ts  # 패키지 모드 편집기 서버 — vite 없이 SPA·문서·저장 엔드포인트
+mcp/save-handler.ts   # 되쓰기 핸들러 — vite 미들웨어와 정적 서버가 공유
+scripts/pack-mcp.ts   # CLI — npm 패키지(polyoffice-mcp) 조립
+scripts/pack-check.ts # CLI — 조립한 패키지를 node로 띄워 검증 (레포 밖 cwd에서)
 mcp/session.ts        # 저장 토큰 — MCP(여는 쪽)와 vite 미들웨어(쓰는 쪽)가 공유하는 브로커
 mcp/save-plugin.ts    # vite dev 미들웨어 — PUT /__polyoffice/save, 편집 결과를 원본 자리로
 docs/IR-AUTHORING.md  # 생성하는 쪽을 위한 IR 작성 설명서 (polyoffice_guide가 그대로 돌려준다)

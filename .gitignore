@@ -37,3 +37,4 @@ samples/ir/*.hwpx
 samples/ir/*.docx
 samples/ir/*.odt
 samples/ir/*.preview.html
+build/
