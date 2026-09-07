@@ -12,10 +12,9 @@
 import { randomBytes } from 'node:crypto'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { SCRATCH } from './paths.ts'
 
-const REPO = fileURLToPath(new URL('..', import.meta.url))
-const SESSION_FILE = join(REPO, 'public', 'scratch', '.sessions.json')
+const SESSION_FILE = join(SCRATCH, '.sessions.json')
 
 /** 하루 지난 세션은 지운다 — 편집기 탭을 며칠 열어둔 채로 쓰기 권한이 살아 있지 않게 */
 const TTL_MS = 24 * 60 * 60 * 1000

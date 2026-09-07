@@ -29,7 +29,8 @@
     "shots": "bun run scripts/shots.ts",
     "mcp": "bun run mcp/server.ts",
     "mcp-sim": "bun run scripts/mcp-sim.ts",
-    "open-sim": "bun run scripts/open-sim.ts"
+    "open-sim": "bun run scripts/open-sim.ts",
+    "pack:mcp": "bun run build && bun run scripts/pack-mcp.ts && bun build mcp/server.ts --target=node --banner '#!/usr/bin/env node' --outfile build/npm/bin/polyoffice-mcp.js && chmod +x build/npm/bin/polyoffice-mcp.js && bun run scripts/pack-check.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
