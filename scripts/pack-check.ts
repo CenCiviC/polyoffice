@@ -50,6 +50,20 @@ check('private 아님', manifest.private !== true)
 const readme = readFileSync(join(PKG, 'README.md'), 'utf8')
 check('README에 설치 한 줄', readme.includes('claude mcp add polyoffice'))
 
+// 사람이 터미널에서 쳐 봤을 때 멈춰 있지 않아야 한다
+const { execFileSync } = await import('node:child_process')
+const node = process.execPath.includes('bun') ? 'node' : process.execPath
+const help = execFileSync(node, [join(PKG, 'bin', 'polyoffice-mcp.js'), '--help'], {
+  encoding: 'utf8',
+  timeout: 20_000,
+})
+check('--help 이 설명하고 끝난다', help.includes('claude mcp add polyoffice'))
+const ver = execFileSync(node, [join(PKG, 'bin', 'polyoffice-mcp.js'), '--version'], {
+  encoding: 'utf8',
+  timeout: 20_000,
+}).trim()
+check('--version 이 매니페스트와 같다', ver === manifest.version, `${ver} vs ${manifest.version}`)
+
 let total = 0
 const walk = (dir: string) => {
   for (const e of require('node:fs').readdirSync(dir, { withFileTypes: true })) {

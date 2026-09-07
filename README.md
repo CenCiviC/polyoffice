@@ -104,6 +104,8 @@ bun run samples-sim                 # samples/ir 전수 — 어떤 문서에나 
 bun run mcp                         # MCP 서버 (stdio) — 프롬프트에서 문서 만들기
 bun run mcp-sim                     # MCP 왕복 검증 (도구 5종 + dev 서버 + 편집기 링크)
 bun run pack:mcp                    # npm 패키지(polyoffice-mcp) 조립 + node로 띄워 전수 검증
+                                    #   배포: cd build/npm && npm publish --access public
+                                    #   버전 진실원은 mcp/version.ts
 bun run open-sim                    # 열기→편집→원본 자리로 되쓰기 왕복 검증 (토큰·덮어쓰기 규칙)
 bun run shots [문서] [출력]          # 진짜 Chrome에 편집기를 띄워 화면 캡처 (dev 서버 먼저)
 bun run compare <input.hwp>         # Rust WASM vs hwp.js 파서 골든 비교

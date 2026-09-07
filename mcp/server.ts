@@ -20,7 +20,8 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
 
 import { FORMATS, IRContractError, buildDocument, readDocument, type Format } from '../scripts/doc-core'
-import { REPO, editorUrl, ensureViewer, publish, slug, stopViewer, viewerStatus } from './viewer'
+import { REPO, SCRATCH, editorUrl, ensureViewer, publish, slug, stopViewer, viewerStatus } from './viewer'
+import { VERSION } from './version.ts'
 import { grant } from './session'
 
 const GUIDE = new URL('../docs/IR-AUTHORING.md', import.meta.url)
@@ -257,6 +258,35 @@ server.registerTool(
     }
   },
 )
+
+// 사람이 터미널에서 그냥 쳐 볼 수 있다. 안내 없이 stdin을 물고 멈춰 있으면
+// "고장 났나" 싶으므로, 인자가 있으면 설명하고 끝낸다. MCP 클라이언트는 인자 없이 띄운다.
+const argv = process.argv.slice(2)
+if (argv.some((a) => ['--help', '-h', 'help'].includes(a))) {
+  process.stdout.write(`polyoffice-mcp — 한글·Word·오픈오피스 문서를 읽고 고치고 쓰는 MCP 서버
+
+이 프로그램은 직접 쓰는 CLI가 아니라 **MCP 클라이언트가 띄우는 서버**다.
+인자 없이 실행하면 stdio로 MCP 프로토콜을 말하며 대기한다.
+
+  claude mcp add polyoffice -- npx -y polyoffice-mcp
+
+Claude Desktop·Cursor 등은 설정에 이렇게 넣는다:
+
+  { "mcpServers": {
+      "polyoffice": { "command": "npx", "args": ["-y", "polyoffice-mcp"] } } }
+
+도구  polyoffice_guide · polyoffice_write · polyoffice_read · polyoffice_open · polyoffice_viewer
+읽기  .hwp .doc .hwpx .docx .odt      쓰기  .hwpx .docx .odt
+문서  ${SCRATCH}
+
+https://github.com/CenCiviC/polyoffice
+`)
+  process.exit(0)
+}
+if (argv.some((a) => ['--version', '-v'].includes(a))) {
+  process.stdout.write(`${VERSION}\n`)
+  process.exit(0)
+}
 
 await server.connect(new StdioServerTransport())
 process.stderr.write(`polyoffice MCP 서버 준비 완료 — ${REPO}\n`)
