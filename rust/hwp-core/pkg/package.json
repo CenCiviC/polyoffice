@@ -1,9 +1,13 @@
 {
   "name": "hwp-core",
   "type": "module",
-  "description": "HWP 5.x binary parser producing the Narro document-model JSON contract",
+  "description": "HWP 5.x binary parser producing the PolyOffice document-model JSON contract",
   "version": "0.1.0",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/CenCiviC/polyoffice"
+  },
   "files": [
     "hwp_core_bg.wasm",
     "hwp_core.js",

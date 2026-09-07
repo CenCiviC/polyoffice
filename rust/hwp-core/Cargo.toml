@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "HWP 5.x binary parser producing the PolyOffice document-model JSON contract"
 license = "Apache-2.0"
+repository = "https://github.com/CenCiviC/polyoffice"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
