@@ -1,8 +1,8 @@
 [package]
-name = "hwp-core"
+name = "poly-core"
 version = "0.1.0"
 edition = "2021"
-description = "HWP 5.x binary parser producing the PolyOffice document-model JSON contract"
+description = "한글(.hwp/.hwpx)·Word(.doc/.docx)·오픈오피스(.odt) 파서 — PolyOffice 문서 모델 JSON 계약을 낸다"
 license = "Apache-2.0"
 repository = "https://github.com/CenCiviC/polyoffice"
 

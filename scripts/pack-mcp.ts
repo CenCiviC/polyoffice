@@ -7,7 +7,7 @@
  * `build/npm/`에 담는다 — 앱 레포의 정체를 건드리지 않으려는 것이다.
  *
  * 레이아웃을 레포와 같게 맞추는 게 요점이다. `scripts/doc-core.ts`가 자산을
- * `import.meta.url` 상대로 읽으므로(`../public/fonts/…`, `../rust/hwp-core/pkg/…`),
+ * `import.meta.url` 상대로 읽으므로(`../public/fonts/…`, `../rust/poly-core/pkg/…`),
  * 번들을 `bin/`(= `scripts/`와 같은 깊이)에 두면 **경로 코드를 고칠 필요가 없다.**
  *
  *   build/npm/
@@ -16,7 +16,7 @@
  *     public/blank.hwpx
  *     public/fonts/*.ttf         ← 글꼴 임베딩에 원본이 필요하다
  *     public/app/                ← 편집기 SPA (vite build 결과)
- *     rust/hwp-core/pkg/*.wasm   ← 파서
+ *     rust/poly-core/pkg/*.wasm   ← 파서
  */
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -58,10 +58,10 @@ for (const f of ['NotoSansKR-Regular.ttf', 'NotoSansKR-Bold.ttf', 'LICENSE-OFL.t
   cpSync(join(REPO, 'public', 'fonts', f), join(OUT, 'public', 'fonts', f))
 }
 cpSync(join(REPO, 'public', 'blank.hwpx'), join(OUT, 'public', 'blank.hwpx'))
-mkdirSync(join(OUT, 'rust', 'hwp-core', 'pkg'), { recursive: true })
+mkdirSync(join(OUT, 'rust', 'poly-core', 'pkg'), { recursive: true })
 cpSync(
-  join(REPO, 'rust', 'hwp-core', 'pkg', 'hwp_core_bg.wasm'),
-  join(OUT, 'rust', 'hwp-core', 'pkg', 'hwp_core_bg.wasm'),
+  join(REPO, 'rust', 'poly-core', 'pkg', 'poly_core_bg.wasm'),
+  join(OUT, 'rust', 'poly-core', 'pkg', 'poly_core_bg.wasm'),
 )
 cpSync(join(REPO, 'LICENSE'), join(OUT, 'LICENSE'))
 // polyoffice_guide가 그대로 돌려주는 문서 — bin/에서 ../docs/ 로 읽는다

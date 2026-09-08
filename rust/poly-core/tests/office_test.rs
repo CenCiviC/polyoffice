@@ -1,10 +1,10 @@
 //! docx·odt 리더 회귀 테스트.
 //! 픽스처는 서식 값을 알고 만든 문서라 숫자를 그대로 단언할 수 있다.
-//! 재생성: `python3 scripts/make-office-fixtures.py rust/hwp-core/tests/fixtures`
+//! 재생성: `python3 scripts/make-office-fixtures.py rust/poly-core/tests/fixtures`
 //! 담긴 것: A4, 스타일 체인으로 상속한 가운데 14pt, 빨강 굵게 12pt, 기울임+밑줄,
 //! 2칸 가로 병합 + 배경 #D9E2F3, 2행 세로 병합.
 
-use hwp_core::{DocModel, Format};
+use poly_core::{DocModel, Format};
 
 fn fixture(name: &str) -> Vec<u8> {
     std::fs::read(format!(
@@ -16,7 +16,7 @@ fn fixture(name: &str) -> Vec<u8> {
 
 /// 문서 전체 텍스트 (표 셀 포함)
 fn all_text(model: &DocModel) -> String {
-    fn walk(paras: &[hwp_core::Paragraph], out: &mut String) {
+    fn walk(paras: &[poly_core::Paragraph], out: &mut String) {
         for p in paras {
             for r in &p.runs {
                 out.push_str(&r.text);
@@ -123,7 +123,7 @@ fn assert_common_shape(model: &DocModel, label: &str) {
 
 #[test]
 fn parses_docx() {
-    let model = hwp_core::parse_docx_document(&fixture("sample.docx")).expect("docx 파싱 실패");
+    let model = poly_core::parse_docx_document(&fixture("sample.docx")).expect("docx 파싱 실패");
     assert_eq!(model.version, "docx");
     assert_common_shape(&model, "docx");
     assert_inline_vocab(&model, "docx");
@@ -140,7 +140,7 @@ fn parses_docx() {
 
 #[test]
 fn parses_odt() {
-    let model = hwp_core::parse_odt_document(&fixture("sample.odt")).expect("odt 파싱 실패");
+    let model = poly_core::parse_odt_document(&fixture("sample.odt")).expect("odt 파싱 실패");
     assert_eq!(model.version, "odt");
     assert_common_shape(&model, "odt");
     assert_inline_vocab(&model, "odt");
@@ -149,8 +149,8 @@ fn parses_odt() {
 /// docx·odt가 같은 값을 내야 하는 것: 링크·첨자·문단 여백.
 /// 픽스처는 서식 값을 우리가 정한 것이라 숫자를 그대로 단언할 수 있다
 /// (들여쓰기 20pt=2000hwpunit · 첫 줄 13pt=1300 · 내어쓰기 -15pt=-1500 · 앞 5pt=500 · 뒤 3pt=300).
-fn assert_inline_vocab(model: &hwp_core::DocModel, who: &str) {
-    let runs: Vec<&hwp_core::Run> = model.sections[0]
+fn assert_inline_vocab(model: &poly_core::DocModel, who: &str) {
+    let runs: Vec<&poly_core::Run> = model.sections[0]
         .paragraphs
         .iter()
         .flat_map(|p| p.runs.iter())
@@ -176,9 +176,9 @@ fn assert_inline_vocab(model: &hwp_core::DocModel, who: &str) {
     assert_eq!(plain.link, None, "{who}: 링크 아닌 런에 주소가 붙었다");
 
     // 위/아래첨자 — CharShape.attr 비트
-    let attr_of = |r: &hwp_core::Run| model.info.char_shapes[r.char_shape_id as usize].attr;
-    let supers: Vec<_> = runs.iter().filter(|r| attr_of(r) & hwp_core::ATTR_SUPER != 0).collect();
-    let subs: Vec<_> = runs.iter().filter(|r| attr_of(r) & hwp_core::ATTR_SUB != 0).collect();
+    let attr_of = |r: &poly_core::Run| model.info.char_shapes[r.char_shape_id as usize].attr;
+    let supers: Vec<_> = runs.iter().filter(|r| attr_of(r) & poly_core::ATTR_SUPER != 0).collect();
+    let subs: Vec<_> = runs.iter().filter(|r| attr_of(r) & poly_core::ATTR_SUB != 0).collect();
     assert_eq!(supers.len(), 1, "{who}: 위첨자 런 개수");
     assert_eq!(subs.len(), 1, "{who}: 아래첨자 런 개수");
     assert_eq!(supers[0].text, "2", "{who}: 위첨자 내용");
@@ -211,7 +211,7 @@ fn assert_inline_vocab(model: &hwp_core::DocModel, who: &str) {
 /// Word 97 실문서(Apache POI 테스트 코퍼스). 조각표·CHPX·PAPX가 다 걸린다.
 #[test]
 fn parses_doc_word97() {
-    let model = hwp_core::parse_doc_document(&fixture("sample_word97.doc")).expect("doc 파싱 실패");
+    let model = poly_core::parse_doc_document(&fixture("sample_word97.doc")).expect("doc 파싱 실패");
     assert!(model.version.starts_with("doc-"), "{}", model.version);
 
     let text = all_text(&model);
@@ -247,7 +247,7 @@ fn parses_doc_word97() {
 #[test]
 fn doc_table_merges_become_colspan() {
     let model =
-        hwp_core::parse_doc_document(&fixture("word97_table_merges.doc")).expect("doc 파싱 실패");
+        poly_core::parse_doc_document(&fixture("word97_table_merges.doc")).expect("doc 파싱 실패");
     let table = model.sections[0]
         .paragraphs
         .iter()
@@ -287,10 +287,10 @@ fn sniffs_every_container() {
     ];
     for (name, want) in cases {
         let data = fixture(name);
-        assert_eq!(hwp_core::sniff_format(&data).unwrap(), want, "{name} 판별");
+        assert_eq!(poly_core::sniff_format(&data).unwrap(), want, "{name} 판별");
         // 자동 경로로도 같은 문서가 나온다
         assert!(
-            !hwp_core::parse_document_auto(&data)
+            !poly_core::parse_document_auto(&data)
                 .unwrap()
                 .sections
                 .is_empty(),
@@ -298,7 +298,7 @@ fn sniffs_every_container() {
         );
     }
     assert!(
-        hwp_core::sniff_format(&[0u8; 64]).is_err(),
+        poly_core::sniff_format(&[0u8; 64]).is_err(),
         "쓰레기 입력 거부"
     );
 }
@@ -315,7 +315,7 @@ fn rejects_unknown_zip() {
         zip.write_all(b"not a document").unwrap();
         zip.finish().unwrap();
     }
-    assert!(hwp_core::sniff_format(&buf).is_err());
+    assert!(poly_core::sniff_format(&buf).is_err());
 }
 
 /// 중첩이 지나치게 깊은 문서는 **크래시 대신 오류**로 끝나야 한다.
@@ -344,7 +344,7 @@ fn deep_nesting_errors_instead_of_crashing() {
         zip.finish().unwrap();
     }
 
-    let err = hwp_core::parse_document_auto(&buf).expect_err("깊은 중첩은 거절해야 함");
+    let err = poly_core::parse_document_auto(&buf).expect_err("깊은 중첩은 거절해야 함");
     assert!(
         err.contains("중첩"),
         "오류 메시지가 원인을 알려야 함: {err}"
@@ -356,7 +356,7 @@ fn deep_nesting_errors_instead_of_crashing() {
 #[test]
 fn doc_extracts_pictures() {
     let model =
-        hwp_core::parse_doc_document(&fixture("word97_pictures.doc")).expect("doc 파싱 실패");
+        poly_core::parse_doc_document(&fixture("word97_pictures.doc")).expect("doc 파싱 실패");
 
     assert_eq!(model.info.bin_data.len(), 2, "그림 2개를 찾아야 함");
     for bin in &model.info.bin_data {
@@ -398,7 +398,7 @@ fn doc_paragraph_margins_are_sane() {
         "word97_table_merges.doc",
         "word97_pictures.doc",
     ] {
-        let model = hwp_core::parse_doc_document(&fixture(name)).expect("doc 파싱 실패");
+        let model = poly_core::parse_doc_document(&fixture(name)).expect("doc 파싱 실패");
         for (i, p) in model.info.para_shapes.iter().enumerate() {
             for (what, v) in [
                 ("indent", p.indent),

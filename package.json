@@ -13,7 +13,7 @@
     "compare": "bun run scripts/compare.ts",
     "edit-sim": "bun run scripts/edit-sim.ts",
     "page-sim": "bun run scripts/page-setup-sim.ts",
-    "wasm:build": "wasm-pack build rust/hwp-core --target web --release",
+    "wasm:build": "wasm-pack build rust/poly-core --target web --release",
     "lint": "oxlint",
     "preview": "vite preview",
     "matrix": "bun run scripts/matrix.ts",

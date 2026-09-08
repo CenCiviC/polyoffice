@@ -15,7 +15,7 @@
 `sample.docx`·`sample.odt`는 손으로 값을 정해 만든 최소 문서다. 재생성:
 
 ```bash
-python3 scripts/make-office-fixtures.py rust/hwp-core/tests/fixtures
+python3 scripts/make-office-fixtures.py rust/poly-core/tests/fixtures
 ```
 
 Apache POI 코퍼스에서 가져온 세 파일은 Apache License 2.0 아래 배포된다

@@ -1,0 +1,21 @@
+{
+  "name": "poly-core",
+  "type": "module",
+  "description": "한글(.hwp/.hwpx)·Word(.doc/.docx)·오픈오피스(.odt) 파서 — PolyOffice 문서 모델 JSON 계약을 낸다",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/CenCiviC/polyoffice"
+  },
+  "files": [
+    "poly_core_bg.wasm",
+    "poly_core.js",
+    "poly_core.d.ts"
+  ],
+  "main": "poly_core.js",
+  "types": "poly_core.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

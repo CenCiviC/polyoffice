@@ -1,9 +1,9 @@
 /**
- * Rust(hwp-core) WASM 파서 로더.
+ * Rust(poly-core) WASM 파서 로더.
  * - 브라우저: initHwpWasm({ url }) — vite의 `?url` 자산 경로로 로드
  * - bun CLI: initHwpWasm({ bytes }) — 파일에서 읽은 바이트로 동기 초기화
  */
-import initWasm, { initSync, parse_hwp_json } from '../../rust/hwp-core/pkg/hwp_core'
+import initWasm, { initSync, parse_hwp_json } from '../../rust/poly-core/pkg/poly_core'
 import type { DocModel } from './model'
 
 let ready = false

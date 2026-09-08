@@ -26,7 +26,7 @@ const dir = process.argv[2] ?? 'corpus'
 const outPath = process.argv[3] ?? 'batch-results.json'
 
 const wasmBytes = new Uint8Array(
-  readFileSync(new URL('../rust/hwp-core/pkg/hwp_core_bg.wasm', import.meta.url)),
+  readFileSync(new URL('../rust/poly-core/pkg/poly_core_bg.wasm', import.meta.url)),
 )
 await initHwpWasm({ bytes: wasmBytes })
 

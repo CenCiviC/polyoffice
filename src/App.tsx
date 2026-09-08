@@ -19,7 +19,7 @@ import {
   type PaperKey,
 } from './lib/page-setup'
 import { initHwpWasm, parseHwpWasm } from './lib/parser-wasm'
-import wasmUrl from '../rust/hwp-core/pkg/hwp_core_bg.wasm?url'
+import wasmUrl from '../rust/poly-core/pkg/poly_core_bg.wasm?url'
 
 type Tab = 'preview' | 'source'
 type ViewMode = 'single' | 'two'

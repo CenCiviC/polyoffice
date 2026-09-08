@@ -60,7 +60,7 @@ export function initRuntime(): Promise<void> {
   wasmReady ??= (async () => {
     if (isWasmReady()) return
     await initHwpWasm({
-      bytes: new Uint8Array(readFileSync(new URL('../rust/hwp-core/pkg/hwp_core_bg.wasm', import.meta.url))),
+      bytes: new Uint8Array(readFileSync(new URL('../rust/poly-core/pkg/poly_core_bg.wasm', import.meta.url))),
     })
   })()
   return wasmReady

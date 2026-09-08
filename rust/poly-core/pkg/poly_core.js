@@ -1,4 +1,4 @@
-/* @ts-self-types="./hwp_core.d.ts" */
+/* @ts-self-types="./poly_core.d.ts" */
 
 /**
  * WASM 진입점: 문서 바이트 → 문서 모델 JSON 문자열 (포맷 자동 판별).
@@ -45,7 +45,7 @@ function __wbg_get_imports() {
     };
     return {
         __proto__: null,
-        "./hwp_core_bg.js": import0,
+        "./poly_core_bg.js": import0,
     };
 }
 
@@ -168,7 +168,7 @@ async function __wbg_init(module_or_path) {
     }
 
     if (module_or_path === undefined) {
-        module_or_path = new URL('hwp_core_bg.wasm', import.meta.url);
+        module_or_path = new URL('poly_core_bg.wasm', import.meta.url);
     }
     const imports = __wbg_get_imports();
 

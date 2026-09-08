@@ -6,7 +6,7 @@ fn parses_fixture_document() {
     ))
     .expect("fixture 읽기 실패");
 
-    let model = hwp_core::parse_document(&data).expect("파싱 실패");
+    let model = poly_core::parse_document(&data).expect("파싱 실패");
 
     assert_eq!(model.version, "5.0.4.0");
     assert_eq!(model.sections.len(), 1);
@@ -35,7 +35,7 @@ fn parses_fixture_document() {
 
 #[test]
 fn rejects_non_hwp() {
-    assert!(hwp_core::parse_document(&[0u8; 64]).is_err());
+    assert!(poly_core::parse_document(&[0u8; 64]).is_err());
 }
 
 /// 제어문자가 본문 텍스트로 새어 나오면 안 된다.
@@ -54,9 +54,9 @@ fn no_control_chars_leak_into_text() {
             env!("CARGO_MANIFEST_DIR")
         ))
         .unwrap();
-        let model = hwp_core::parse_document_auto(&data).unwrap();
+        let model = poly_core::parse_document_auto(&data).unwrap();
 
-        fn walk(paras: &[hwp_core::Paragraph], name: &str) {
+        fn walk(paras: &[poly_core::Paragraph], name: &str) {
             for p in paras {
                 for r in &p.runs {
                     for ch in r.text.chars() {

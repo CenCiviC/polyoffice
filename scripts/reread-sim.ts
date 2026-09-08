@@ -17,7 +17,7 @@ import { initHwpWasm, parseHwpWasm } from '../src/lib/parser-wasm'
 
 const template = new Uint8Array(readFileSync(new URL('../public/blank.hwpx', import.meta.url)))
 await initHwpWasm({
-  bytes: new Uint8Array(readFileSync(new URL('../rust/hwp-core/pkg/hwp_core_bg.wasm', import.meta.url))),
+  bytes: new Uint8Array(readFileSync(new URL('../rust/poly-core/pkg/poly_core_bg.wasm', import.meta.url))),
 })
 
 let ok = true

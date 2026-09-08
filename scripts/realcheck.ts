@@ -14,7 +14,7 @@ const [outDir, ...inputs] = process.argv.slice(2)
 mkdirSync(outDir, { recursive: true })
 
 await initHwpWasm({
-  bytes: new Uint8Array(readFileSync(new URL('../rust/hwp-core/pkg/hwp_core_bg.wasm', import.meta.url))),
+  bytes: new Uint8Array(readFileSync(new URL('../rust/poly-core/pkg/poly_core_bg.wasm', import.meta.url))),
 })
 
 for (const input of inputs) {

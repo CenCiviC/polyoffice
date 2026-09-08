@@ -1,6 +1,6 @@
 /**
  * 문서 모델 — 파서(Rust WASM / hwp.js)와 변환기 사이의 JSON 계약.
- * Rust 쪽 대응 타입: rust/hwp-core/src/model.rs. 두 파일은 항상 함께 변경한다.
+ * Rust 쪽 대응 타입: rust/poly-core/src/model.rs. 두 파일은 항상 함께 변경한다.
  */
 
 export interface DocModel {

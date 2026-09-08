@@ -31,7 +31,7 @@ const must = [
   'public/fonts/NotoSansKR-Regular.ttf',
   'public/fonts/NotoSansKR-Bold.ttf',
   'public/fonts/LICENSE-OFL.txt',
-  'rust/hwp-core/pkg/hwp_core_bg.wasm',
+  'rust/poly-core/pkg/poly_core_bg.wasm',
   'docs/IR-AUTHORING.md',
   'LICENSE',
   'README.md',

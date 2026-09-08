@@ -5,7 +5,7 @@ import { initHwpWasm, parseHwpWasm } from '../src/lib/parser-wasm'
 
 export async function convertWithWasm(data: Uint8Array): Promise<ConvertResult> {
   const wasmBytes = new Uint8Array(
-    readFileSync(new URL('../rust/hwp-core/pkg/hwp_core_bg.wasm', import.meta.url)),
+    readFileSync(new URL('../rust/poly-core/pkg/poly_core_bg.wasm', import.meta.url)),
   )
   await initHwpWasm({ bytes: wasmBytes })
   return convertModel(parseHwpWasm(data), 'wasm')

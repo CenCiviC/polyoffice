@@ -6,7 +6,7 @@ fn parses_hwpx_fixture() {
     ))
     .expect("fixture 읽기 실패");
 
-    let model = hwp_core::parse_hwpx_document(&data).expect("파싱 실패");
+    let model = poly_core::parse_hwpx_document(&data).expect("파싱 실패");
 
     assert_eq!(model.version, "hwpx-1.4");
     assert_eq!(model.sections.len(), 1);
@@ -58,7 +58,7 @@ fn parses_hwpx_fixture() {
     assert!(cell.width > 0);
 
     // 이미지: binData 인덱스가 실제 배열 범위를 가리킨다
-    fn any_image(paras: &[hwp_core::Paragraph]) -> Option<&hwp_core::Image> {
+    fn any_image(paras: &[poly_core::Paragraph]) -> Option<&poly_core::Image> {
         for p in paras {
             if let Some(img) = p.images.first() {
                 return Some(img);
@@ -94,12 +94,12 @@ fn auto_detects_format() {
     .unwrap();
 
     assert_eq!(
-        hwp_core::parse_document_auto(&hwpx).unwrap().version,
+        poly_core::parse_document_auto(&hwpx).unwrap().version,
         "hwpx-1.4"
     );
     assert_eq!(
-        hwp_core::parse_document_auto(&hwp).unwrap().version,
+        poly_core::parse_document_auto(&hwp).unwrap().version,
         "5.0.4.0"
     );
-    assert!(hwp_core::parse_document_auto(&[0u8; 64]).is_err());
+    assert!(poly_core::parse_document_auto(&[0u8; 64]).is_err());
 }

@@ -6,8 +6,8 @@
 읽기는 다섯 포맷 전부, **쓰기는 .hwpx·.docx·.odt** 세 포맷이다. `.hwp`와 `.doc`은
 OLE 바이너리 직렬화라 읽기만 된다 — 열어서 고친 뒤 .hwpx나 .docx로 저장하면 된다.
 
-**파서는 자체 Rust 크레이트(`rust/hwp-core`) → WASM.** 다섯 포맷이 모두 같은
-문서 모델 JSON 계약(`src/lib/model.ts` ↔ `rust/hwp-core/src/model.rs`)을 채우기 때문에
+**파서는 자체 Rust 크레이트(`rust/poly-core`) → WASM.** 다섯 포맷이 모두 같은
+문서 모델 JSON 계약(`src/lib/model.ts` ↔ `rust/poly-core/src/model.rs`)을 채우기 때문에
 방출기·편집기·hwpx 쓰기는 입력 포맷을 전혀 모른다. 새 포맷 지원 = 리더 하나 추가.
 
 | 포맷 | 컨테이너 | 리더 |
@@ -71,7 +71,7 @@ DearDent EMR DS 이식)을 따른다. **UI를 만들거나 고치기 전에
 **[Bun](https://bun.sh) 하나면 된다** (`curl -fsSL https://bun.sh/install | bash`).
 Node·Rust·한글·Word 전부 필요 없다.
 
-Rust 파서는 미리 빌드한 WASM(`rust/hwp-core/pkg/`)을 레포에 커밋해 두었으므로
+Rust 파서는 미리 빌드한 WASM(`rust/poly-core/pkg/`)을 레포에 커밋해 두었으므로
 **클론 직후 바로 돌아간다.** Rust 툴체인은 파서를 직접 고칠 때만 필요하고,
 그때도 `wasm-pack`은 npm 의존성이라 따로 설치할 게 없다 (`bun run wasm:build`).
 
@@ -109,11 +109,11 @@ bun run pack:mcp                    # npm 패키지(polyoffice-mcp) 조립 + nod
 bun run open-sim                    # 열기→편집→원본 자리로 되쓰기 왕복 검증 (토큰·덮어쓰기 규칙)
 bun run shots [문서] [출력]          # 진짜 Chrome에 편집기를 띄워 화면 캡처 (dev 서버 먼저)
 bun run compare <input.hwp>         # Rust WASM vs hwp.js 파서 골든 비교
-bun run wasm:build                  # Rust 파서 재빌드 (rust/hwp-core 수정 후)
-cd rust/hwp-core && cargo test      # Rust 파서 유닛/통합 테스트
+bun run wasm:build                  # Rust 파서 재빌드 (rust/poly-core 수정 후)
+cd rust/poly-core && cargo test      # Rust 파서 유닛/통합 테스트
 
 # docx/odt 회귀 픽스처 재생성 (서식 값을 아는 최소 문서)
-python3 scripts/make-office-fixtures.py rust/hwp-core/tests/fixtures
+python3 scripts/make-office-fixtures.py rust/poly-core/tests/fixtures
 ```
 
 ## MCP — 프롬프트에서 문서 만들기
@@ -326,7 +326,7 @@ hwpx 하이퍼링크는 이제 읽기·쓰기 둘 다 된다 — `Command` 문�
 검증: hwpx 샘플 4종(재정경제부 보도자료)은 내장 미리보기 텍스트(`Preview/PrvText.txt`)
 대비 본문 텍스트 100% 일치. docx/odt는 서식 값을 아는 최소 픽스처로 크기·색·굵기·정렬·
 병합·배경을 단언하고, `.doc`은 Apache POI 테스트 코퍼스의 실문서로 글꼴·크기·색·표 병합을
-검증한다(`rust/hwp-core/tests/office_test.rs`). 같은 문서를 `.doc`과 `.docx`로 저장한
+검증한다(`rust/poly-core/tests/office_test.rs`). 같은 문서를 `.doc`과 `.docx`로 저장한
 `SampleDoc`은 두 리더가 **문자 수까지 같은 결과**를 낸다.
 
 ## 아직 안 되는 것
@@ -351,7 +351,7 @@ hwpx 하이퍼링크는 이제 읽기·쓰기 둘 다 된다 — `Command` 문�
 docs/IR-SPEC.md       # Document IR 스펙 — 어휘·백엔드 매핑·검증 규칙 (계약의 진실원)
 docs/TODO.md          # 남은 일과 순서 — 다음에 뭘 할지는 여기부터 본다
 docs/GDOCS-FEATURES.md# 구글 문서 기능 전수 인벤토리 (기준선 분석)
-rust/hwp-core/        # Rust 파서 크레이트 → 문서 모델 JSON (cdylib+rlib, wasm-pack)
+rust/poly-core/        # Rust 파서 크레이트 → 문서 모델 JSON (cdylib+rlib, wasm-pack)
   src/lib.rs          #   sniff_format(): 내용물로 포맷 판별 → 알맞은 리더로 분배
   src/parse.rs        #   .hwp — OLE + 바이너리 레코드
   src/doc.rs          #   .doc — OLE + 조각표/FKP (Word 97-2003)
@@ -411,6 +411,6 @@ scripts/probe*.ts     # hwp.js 파싱 탐색용 스크립트
 
 | 대상 | 라이선스 | 비고 |
 |---|---|---|
-| [hwp.js](https://github.com/hahnlee/hwp.js) (Han Lee) | Apache-2.0 | `.hwp` 레코드 해독 로직을 Rust로 이식했다. 출처는 `rust/hwp-core/src/parse.rs` 머리에 밝혀 두었다 |
+| [hwp.js](https://github.com/hahnlee/hwp.js) (Han Lee) | Apache-2.0 | `.hwp` 레코드 해독 로직을 Rust로 이식했다. 출처는 `rust/poly-core/src/parse.rs` 머리에 밝혀 두었다 |
 | Noto Sans KR | SIL OFL 1.1 | `public/fonts/` — 전문은 [LICENSE-OFL.txt](public/fonts/LICENSE-OFL.txt). © 2014-2021 Adobe |
 | `samples/` 의 정부 문서 | 각 기관 공표물 | 기재부·문체부·행안부·국립국어원이 공개한 자료를 파서 검증용으로 담았다. 저작권은 각 기관에 있다 |
